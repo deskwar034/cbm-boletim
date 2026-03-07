@@ -120,7 +120,7 @@ if btn_buscar:
                     params_busca = {
                         "de": data_inicial_iso,
                         "ate": data_final_iso,
-                        "tipo": "buscaPorPalavra"
+                        "tipo": "buscaExata"
                     }
                     
                     resposta_busca = sessao.get(BUSCA_BG_URL, params=params_busca)
