@@ -73,17 +73,15 @@ with st.form("login_form"):
     btn_buscar = st.form_submit_button("Entrar e Buscar")
 
 # ==========================================
-# 4. LÓGICA DE REQUISIÇÕES E LOGS
+# 4. LÓGICA DE REQUISIÇÕES
 # ==========================================
 if btn_buscar:
     if not usuario or not senha or not nome_busca:
         st.warning("Preencha todos os campos obrigatórios.")
     else:
-        data_inicial_iso = data_inicial.strftime("%Y-%m-%dT00:00:00.000Z")
-        data_final_iso = data_final.strftime("%Y-%m-%dT23:59:59.999Z")
-        
-        # Variáveis para armazenar logs que serão exibidos no final
-        logs_debug = []
+        # Ajustado para o formato exato da requisição interceptada (com 03:00:00.000Z)
+        data_inicial_iso = data_inicial.strftime("%Y-%m-%dT03:00:00.000Z")
+        data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
         with st.spinner("Conectando e buscando..."):
             sessao = requests.Session()
@@ -92,7 +90,6 @@ if btn_buscar:
             
             try:
                 resposta_login = sessao.post(LOGIN_URL, json=payload_login)
-                logs_debug.append(f"HTTP Status Login: {resposta_login.status_code}")
                 
                 if resposta_login.status_code == 200:
                     dados_login = resposta_login.json()
@@ -103,37 +100,34 @@ if btn_buscar:
                     if not token: token = resposta_login.headers.get("token")
                     if token: sessao.headers.update({"token": token})
                         
-                    # PARÂMETROS DA BUSCA (Adicionado um chute para a chave do texto)
+                    # ==============================================
+                    # PARÂMETROS CORRETOS IDENTIFICADOS NO SISTEMA
+                    # ==============================================
                     params_busca = {
                         "de": data_inicial_iso,
                         "ate": data_final_iso,
                         "tipo": "buscaExata",
-                        "palavra": nome_busca, # Testando se a API aceita 'palavra'
-                        "texto": nome_busca    # Testando se a API aceita 'texto'
+                        "conteudo": nome_busca
                     }
                     
+                    # O "requests" cuida de transformar os espaços em %20 automaticamente
                     resposta_busca = sessao.get(BUSCA_BG_URL, params=params_busca)
-                    logs_debug.append(f"URL de Busca Chamada: {resposta_busca.url}")
-                    logs_debug.append(f"HTTP Status Busca: {resposta_busca.status_code}")
                     
                     if resposta_busca.status_code == 200:
                         publicacoes_brutas = resposta_busca.json()
                         lista_pubs = publicacoes_brutas if isinstance(publicacoes_brutas, list) else publicacoes_brutas.get("content", publicacoes_brutas.get("data", []))
                         
-                        logs_debug.append(f"Total de itens retornados pela API: {len(lista_pubs)}")
-                        
                         if not lista_pubs:
-                            st.warning("Nenhum Boletim Geral encontrado neste período.")
+                            st.warning(f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período.")
                         else:
                             encontrou_algo = False
-                            st.write(f"Baixando e analisando {len(lista_pubs)} boletim(ns)...")
+                            st.write(f"A API do sistema retornou {len(lista_pubs)} boletim(ns) com o seu nome! Baixando e extraindo a nota exata...")
                             
-                            for index, pub in enumerate(lista_pubs):
+                            for pub in lista_pubs:
                                 if not isinstance(pub, dict): continue
                                 
                                 upload_id = pub.get("upload", {}).get("id") if isinstance(pub.get("upload"), dict) else pub.get("uploadId")
                                 num_bg = pub.get("numero", "S/N")
-                                logs_debug.append(f"Processando BG Nº {num_bg} | Upload ID: {upload_id}")
                                 
                                 if upload_id:
                                     url_pdf = f"{DOWNLOAD_BG_URL}{upload_id}"
@@ -143,16 +137,6 @@ if btn_buscar:
                                         arquivo_pdf = io.BytesIO(resposta_pdf.content)
                                         leitor = PdfReader(arquivo_pdf)
                                         texto_completo = "".join(pagina.extract_text() + "\n" for pagina in leitor.pages)
-                                        
-                                        # LOG ESPECIAL: Mostra um pedaço do PDF do primeiro BG para vermos se a extração funcionou
-                                        if index == 0:
-                                            logs_debug.append(f"\n--- AMOSTRA DE TEXTO EXTRAÍDO DO BG {num_bg} ---\n{texto_completo[:1000]}\n-----------------------------------------")
-                                            
-                                        # LOG ESPECIAL: Tenta achar o nome puro no texto cru para ver se é culpa do Regex
-                                        if nome_busca.lower() in texto_completo.lower():
-                                            logs_debug.append(f"O nome '{nome_busca}' FOI ENCONTRADO no texto bruto do BG {num_bg} (o erro é no Regex).")
-                                        else:
-                                            logs_debug.append(f"O nome '{nome_busca}' NÃO ESTÁ no texto bruto do BG {num_bg} (a API baixou um arquivo que não tem seu nome).")
                                             
                                         resultados = extrair_alteracoes_exatas(texto_completo, nome_busca)
                                         
@@ -166,16 +150,11 @@ if btn_buscar:
                                                         st.error(item)
                                                         
                             if not encontrou_algo:
-                                st.info(f"Busca finalizada! O nome '{nome_busca}' não foi identificado pelo extrator de texto.")
+                                st.info("O sistema encontrou o Boletim, mas o extrator não conseguiu isolar o parágrafo (Pode haver quebras de linha complexas no PDF).")
                     else:
-                        st.error("Erro ao buscar a lista de boletins.")
+                        st.error("Erro ao buscar a lista de boletins. Verifique se o sistema está online.")
                 else:
-                    st.error("Falha no login.")
+                    st.error("Falha no login. Verifique suas credenciais.")
                     
             except Exception as e:
-                st.error("Erro de comunicação com o servidor.")
-                logs_debug.append(f"EXCEÇÃO: {str(e)}")
-
-        # Exibe o painel de logs para você copiar e colar
-        with st.expander("🛠️ Logs de Depuração (Copie e cole para o chat)", expanded=False):
-            st.code("\n".join(logs_debug), language="text")
+                st.error(f"Erro de comunicação com o servidor: {str(e)}")
