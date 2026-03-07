@@ -6,7 +6,7 @@ import datetime
 from pypdf import PdfReader
 
 # ==========================================
-# 1. CONFIGURAÇÕES DA API (Endpoints)
+# 1. CONFIGURAÇÕES DA API E SESSÃO
 # ==========================================
 BASE_URL = "https://sistemas.bombeiros.ms.gov.br"
 LOGIN_URL = f"{BASE_URL}/ws-auth/fazer-login"
@@ -14,13 +14,22 @@ USUARIO_LOGADO_URL = f"{BASE_URL}/ws-auth/usuario-logado"
 BUSCA_BG_URL = f"{BASE_URL}/ws-boletim-geral/publicacao"
 DOWNLOAD_BG_URL = f"{BASE_URL}/ws-alfresco/arquivo/"
 
+# Criando a "Memória" do aplicativo para não resetar ao fazer download
+if "busca_concluida" not in st.session_state:
+    st.session_state.busca_concluida = False
+if "bgs_encontrados" not in st.session_state:
+    st.session_state.bgs_encontrados = []
+if "nome_pesquisado" not in st.session_state:
+    st.session_state.nome_pesquisado = ""
+if "mensagem_status" not in st.session_state:
+    st.session_state.mensagem_status = ""
+
 # ==========================================
 # 2. FUNÇÕES DE EXTRAÇÃO E FORMATAÇÃO
 # ==========================================
 def extrair_alteracoes_exatas(texto_bg, nome_militar):
     blocos_de_nota = re.split(r'(?i)NOTA N\.\s*', texto_bg)
     resultados = []
-    
     for bloco in blocos_de_nota:
         nome_regex = re.escape(nome_militar).replace(r'\ ', r'\s+')
         if re.search(nome_regex, bloco, re.IGNORECASE):
@@ -45,11 +54,9 @@ def extrair_alteracoes_exatas(texto_bg, nome_militar):
                     "cabecalho": cabecalho_limpo,
                     "itens": itens_encontrados
                 })
-                
     return resultados
 
 def gerar_relatorio_txt(bgs_com_resultados, nome_busca):
-    """Gera um texto formatado como relatório oficial para exportação."""
     linhas = []
     linhas.append("=" * 70)
     linhas.append("RELATÓRIO DE ALTERAÇÕES FUNCIONAIS - CBMMS")
@@ -99,17 +106,23 @@ with st.form("login_form"):
     btn_buscar = st.form_submit_button("Entrar e Buscar")
 
 # ==========================================
-# 4. LÓGICA DE REQUISIÇÕES E FEEDBACK VISUAL
+# 4. LÓGICA DE REQUISIÇÕES
 # ==========================================
 if btn_buscar:
     if not usuario or not senha or not nome_busca:
         st.warning("Preencha todos os campos obrigatórios.")
     else:
+        # Resetando a memória para uma pesquisa nova
+        st.session_state.busca_concluida = False
+        st.session_state.bgs_encontrados = []
+        st.session_state.nome_pesquisado = nome_busca
+        st.session_state.mensagem_status = ""
+
         data_inicial_iso = data_inicial.strftime("%Y-%m-%dT03:00:00.000Z")
         data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
+        # Expanded=True garante que não vai minimizar
         with st.status("Iniciando processo...", expanded=True) as status_box:
-            
             st.write("🔐 Conectando ao sistema CBMMS...")
             sessao = requests.Session()
             sessao.headers.update({"Content-Type": "application/json"})
@@ -120,7 +133,6 @@ if btn_buscar:
                 
                 if resposta_login.status_code == 200:
                     dados_login = resposta_login.json()
-                    
                     token = None
                     if isinstance(dados_login, dict): token = dados_login.get("token")
                     elif isinstance(dados_login, list) and len(dados_login) > 0 and isinstance(dados_login[0], dict): token = dados_login[0].get("token")
@@ -128,7 +140,7 @@ if btn_buscar:
                     if token: sessao.headers.update({"token": token})
                     
                     st.write("✅ Autenticação realizada com sucesso!")
-                    st.write("📡 Consultando o banco de dados de Boletins Gerais...")
+                    st.write("📡 Consultando o banco de dados de Boletins Gerais, essa etapa pode demorar um pouco mais dependendo do contexto a ser procurado...")
                         
                     params_busca = {
                         "de": data_inicial_iso,
@@ -145,8 +157,9 @@ if btn_buscar:
                         
                         if not lista_pubs:
                             st.write("⚠️ Nenhum boletim encontrado com o seu nome neste período.")
-                            status_box.update(label="Busca concluída sem resultados.", state="complete", expanded=False)
-                            st.warning(f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período.")
+                            status_box.update(label="Busca concluída sem resultados.", state="complete", expanded=True)
+                            st.session_state.mensagem_status = f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período."
+                            st.session_state.busca_concluida = True
                         else:
                             st.write(f"📥 A API retornou {len(lista_pubs)} boletim(ns). Preparando para extração...")
                             
@@ -182,35 +195,13 @@ if btn_buscar:
                                 barra_progresso.progress((i + 1) / len(lista_pubs))
                                 
                             texto_progresso.text("✅ Processamento de todos os PDFs finalizado!")
-                            status_box.update(label="Busca finalizada com sucesso!", state="complete", expanded=False)
+                            status_box.update(label="Busca finalizada com sucesso!", state="complete", expanded=True)
                             
-                            # ==========================================
-                            # EXIBIÇÃO DE RESULTADOS E BOTÃO DE DOWNLOAD
-                            # ==========================================
-                            if bgs_com_resultados:
-                                st.success(f"Encontramos suas publicações em {len(bgs_com_resultados)} boletim(ns)!")
-                                
-                                # Gera a string do arquivo .txt
-                                texto_relatorio = gerar_relatorio_txt(bgs_com_resultados, nome_busca)
-                                
-                                # Cria o botão de download
-                                st.download_button(
-                                    label="📥 Baixar Relatório Completo (.txt)",
-                                    data=texto_relatorio,
-                                    file_name=f"Relatorio_BG_{nome_busca.replace(' ', '_')}.txt",
-                                    mime="text/plain"
-                                )
-                                
-                                # Mostra na tela os cards interativos
-                                for bg_encontrado in bgs_com_resultados:
-                                    st.subheader(f"📄 BG Nº {bg_encontrado['numero_bg']}")
-                                    for res in bg_encontrado['resultados']:
-                                        with st.expander(f"📌 NOTA N. {res['nota']}", expanded=True):
-                                            st.markdown(f"**Contexto:** {res['cabecalho']}")
-                                            for item in res['itens']:
-                                                st.error(item)
-                            else:
-                                st.info("O sistema encontrou o Boletim, mas o extrator não conseguiu isolar o parágrafo (Pode haver quebras de linha complexas no PDF).")
+                            # SALVANDO NA MEMÓRIA DA SESSÃO
+                            st.session_state.bgs_encontrados = bgs_com_resultados
+                            st.session_state.busca_concluida = True
+                            if not bgs_com_resultados:
+                                st.session_state.mensagem_status = "O sistema encontrou o Boletim, mas o extrator não conseguiu isolar o parágrafo."
                                 
                     else:
                         status_box.update(label="Erro na busca.", state="error", expanded=True)
@@ -222,3 +213,36 @@ if btn_buscar:
             except Exception as e:
                 status_box.update(label="Erro interno.", state="error", expanded=True)
                 st.error(f"Erro de comunicação com o servidor: {str(e)}")
+
+# ==========================================
+# 5. EXIBIÇÃO PERSISTENTE (Não some no download)
+# ==========================================
+if st.session_state.busca_concluida:
+    st.divider() # Adiciona uma linha de divisão bem sutil
+    
+    bgs_resultados = st.session_state.bgs_encontrados
+    nome_pesquisado = st.session_state.nome_pesquisado
+    
+    if bgs_resultados:
+        st.success(f"Encontramos suas publicações em {len(bgs_resultados)} boletim(ns)!")
+        
+        texto_relatorio = gerar_relatorio_txt(bgs_resultados, nome_pesquisado)
+        
+        # O Botão de Download fica fora do fluxo de "busca", assim a tela não apaga!
+        st.download_button(
+            label="📥 Baixar Relatório Completo (.txt)",
+            data=texto_relatorio,
+            file_name=f"Relatorio_BG_{nome_pesquisado.replace(' ', '_')}.txt",
+            mime="text/plain"
+        )
+        
+        for bg_encontrado in bgs_resultados:
+            st.subheader(f"📄 BG Nº {bg_encontrado['numero_bg']}")
+            for res in bg_encontrado['resultados']:
+                with st.expander(f"📌 NOTA N. {res['nota']}", expanded=True):
+                    st.markdown(f"**Contexto:** {res['cabecalho']}")
+                    for item in res['itens']:
+                        st.error(item)
+    else:
+        if st.session_state.mensagem_status:
+            st.warning(st.session_state.mensagem_status)
