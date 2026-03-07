@@ -14,7 +14,6 @@ USUARIO_LOGADO_URL = f"{BASE_URL}/ws-auth/usuario-logado"
 BUSCA_BG_URL = f"{BASE_URL}/ws-boletim-geral/publicacao"
 DOWNLOAD_BG_URL = f"{BASE_URL}/ws-alfresco/arquivo/"
 
-# Criando a "Memória" do aplicativo para não resetar ao fazer download
 if "busca_concluida" not in st.session_state:
     st.session_state.busca_concluida = False
 if "bgs_encontrados" not in st.session_state:
@@ -25,8 +24,19 @@ if "mensagem_status" not in st.session_state:
     st.session_state.mensagem_status = ""
 
 # ==========================================
-# 2. FUNÇÕES DE EXTRAÇÃO E FORMATAÇÃO
+# 2. FUNÇÕES DE FORMATAÇÃO E EXTRAÇÃO
 # ==========================================
+def formatar_cpf(cpf_bruto):
+    """Limpa a entrada do usuário e aplica a máscara oficial do CPF."""
+    # Remove tudo que não for número
+    cpf_limpo = re.sub(r'\D', '', cpf_bruto)
+    # Completa com zeros à esquerda caso falte algum número (opcional)
+    cpf_limpo = cpf_limpo.zfill(11)
+    # Se o tamanho estiver correto (11 dígitos), aplica a máscara
+    if len(cpf_limpo) == 11:
+        return f"{cpf_limpo[:3]}.{cpf_limpo[3:6]}.{cpf_limpo[6:9]}-{cpf_limpo[9:]}"
+    return cpf_bruto # Retorna do jeito que veio se tiver tamanho inválido para o sistema barrar
+
 def extrair_alteracoes_exatas(texto_bg, nome_militar):
     blocos_de_nota = re.split(r'(?i)NOTA N\.\s*', texto_bg)
     resultados = []
@@ -91,6 +101,7 @@ st.title("🚒 Buscador Inteligente do BG - CBMMS")
 
 with st.form("login_form"):
     st.subheader("1. Credenciais de Acesso")
+    st.caption("Você pode digitar seu CPF com ou sem pontos.")
     usuario = st.text_input("Login (CPF)")
     senha = st.text_input("Senha", type="password")
     
@@ -112,21 +123,22 @@ if btn_buscar:
     if not usuario or not senha or not nome_busca:
         st.warning("Preencha todos os campos obrigatórios.")
     else:
-        # Resetando a memória para uma pesquisa nova
         st.session_state.busca_concluida = False
         st.session_state.bgs_encontrados = []
         st.session_state.nome_pesquisado = nome_busca
         st.session_state.mensagem_status = ""
 
+        # Formatação do CPF antes de enviar
+        cpf_formatado = formatar_cpf(usuario)
+        
         data_inicial_iso = data_inicial.strftime("%Y-%m-%dT03:00:00.000Z")
         data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
-        # Expanded=True garante que não vai minimizar
         with st.status("Iniciando processo...", expanded=True) as status_box:
-            st.write("🔐 Conectando ao sistema CBMMS...")
+            st.write(f"🔐 Conectando ao sistema CBMMS com usuário: {cpf_formatado} ...")
             sessao = requests.Session()
             sessao.headers.update({"Content-Type": "application/json"})
-            payload_login = {"login": usuario, "senha": senha}
+            payload_login = {"login": cpf_formatado, "senha": senha}
             
             try:
                 resposta_login = sessao.post(LOGIN_URL, json=payload_login)
@@ -140,7 +152,11 @@ if btn_buscar:
                     if token: sessao.headers.update({"token": token})
                     
                     st.write("✅ Autenticação realizada com sucesso!")
-                    st.write("📡 Consultando o banco de dados de Boletins Gerais, essa etapa pode demorar um pouco mais dependendo do contexto a ser procurado...")
+                    
+                    # Atualiza a interface avisando que pode demorar
+                    status_box.update(label="Aguardando resposta do servidor do CBMMS...", state="running")
+                    st.write("📡 Consultando o banco de dados de Boletins Gerais...")
+                    aviso_demora = st.info("⏳ Esta etapa pode demorar um pouco dependendo do intervalo de datas e do volume de publicações. Por favor, aguarde...")
                         
                     params_busca = {
                         "de": data_inicial_iso,
@@ -150,6 +166,9 @@ if btn_buscar:
                     }
                     
                     resposta_busca = sessao.get(BUSCA_BG_URL, params=params_busca)
+                    
+                    # Remove o aviso de demora assim que o servidor responde
+                    aviso_demora.empty()
                     
                     if resposta_busca.status_code == 200:
                         publicacoes_brutas = resposta_busca.json()
@@ -161,7 +180,8 @@ if btn_buscar:
                             st.session_state.mensagem_status = f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período."
                             st.session_state.busca_concluida = True
                         else:
-                            st.write(f"📥 A API retornou {len(lista_pubs)} boletim(ns). Preparando para extração...")
+                            status_box.update(label="Baixando e extraindo PDFs...", state="running")
+                            st.write(f"📥 O servidor respondeu! A API retornou {len(lista_pubs)} boletim(ns). Preparando para extração...")
                             
                             barra_progresso = st.progress(0)
                             texto_progresso = st.empty()
@@ -197,7 +217,6 @@ if btn_buscar:
                             texto_progresso.text("✅ Processamento de todos os PDFs finalizado!")
                             status_box.update(label="Busca finalizada com sucesso!", state="complete", expanded=True)
                             
-                            # SALVANDO NA MEMÓRIA DA SESSÃO
                             st.session_state.bgs_encontrados = bgs_com_resultados
                             st.session_state.busca_concluida = True
                             if not bgs_com_resultados:
@@ -215,10 +234,10 @@ if btn_buscar:
                 st.error(f"Erro de comunicação com o servidor: {str(e)}")
 
 # ==========================================
-# 5. EXIBIÇÃO PERSISTENTE (Não some no download)
+# 5. EXIBIÇÃO PERSISTENTE
 # ==========================================
 if st.session_state.busca_concluida:
-    st.divider() # Adiciona uma linha de divisão bem sutil
+    st.divider() 
     
     bgs_resultados = st.session_state.bgs_encontrados
     nome_pesquisado = st.session_state.nome_pesquisado
@@ -228,7 +247,6 @@ if st.session_state.busca_concluida:
         
         texto_relatorio = gerar_relatorio_txt(bgs_resultados, nome_pesquisado)
         
-        # O Botão de Download fica fora do fluxo de "busca", assim a tela não apaga!
         st.download_button(
             label="📥 Baixar Relatório Completo (.txt)",
             data=texto_relatorio,
