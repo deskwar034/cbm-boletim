@@ -28,14 +28,11 @@ if "mensagem_status" not in st.session_state:
 # ==========================================
 def formatar_cpf(cpf_bruto):
     """Limpa a entrada do usuário e aplica a máscara oficial do CPF."""
-    # Remove tudo que não for número
     cpf_limpo = re.sub(r'\D', '', cpf_bruto)
-    # Completa com zeros à esquerda caso falte algum número (opcional)
     cpf_limpo = cpf_limpo.zfill(11)
-    # Se o tamanho estiver correto (11 dígitos), aplica a máscara
     if len(cpf_limpo) == 11:
         return f"{cpf_limpo[:3]}.{cpf_limpo[3:6]}.{cpf_limpo[6:9]}-{cpf_limpo[9:]}"
-    return cpf_bruto # Retorna do jeito que veio se tiver tamanho inválido para o sistema barrar
+    return cpf_bruto
 
 def extrair_alteracoes_exatas(texto_bg, nome_militar):
     blocos_de_nota = re.split(r'(?i)NOTA N\.\s*', texto_bg)
@@ -110,9 +107,11 @@ with st.form("login_form"):
     
     col1, col2 = st.columns(2)
     with col1:
-        data_inicial = st.date_input("Data Inicial", datetime.date.today() - datetime.timedelta(days=30))
+        # Formato de data alterado para o padrão brasileiro
+        data_inicial = st.date_input("Data Inicial", datetime.date.today() - datetime.timedelta(days=30), format="DD/MM/YYYY")
     with col2:
-        data_final = st.date_input("Data Final", datetime.date.today())
+        # Formato de data alterado para o padrão brasileiro
+        data_final = st.date_input("Data Final", datetime.date.today(), format="DD/MM/YYYY")
         
     btn_buscar = st.form_submit_button("Entrar e Buscar")
 
@@ -128,12 +127,12 @@ if btn_buscar:
         st.session_state.nome_pesquisado = nome_busca
         st.session_state.mensagem_status = ""
 
-        # Formatação do CPF antes de enviar
         cpf_formatado = formatar_cpf(usuario)
         
         data_inicial_iso = data_inicial.strftime("%Y-%m-%dT03:00:00.000Z")
         data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
+        # Expanded=True garante que a caixa inicie aberta
         with st.status("Iniciando processo...", expanded=True) as status_box:
             st.write(f"🔐 Conectando ao sistema CBMMS com usuário: {cpf_formatado} ...")
             sessao = requests.Session()
@@ -153,8 +152,7 @@ if btn_buscar:
                     
                     st.write("✅ Autenticação realizada com sucesso!")
                     
-                    # Atualiza a interface avisando que pode demorar
-                    status_box.update(label="Aguardando resposta do servidor do CBMMS...", state="running")
+                    status_box.update(label="Aguardando resposta do servidor do CBMMS...", state="running", expanded=True)
                     st.write("📡 Consultando o banco de dados de Boletins Gerais...")
                     aviso_demora = st.info("⏳ Esta etapa pode demorar um pouco dependendo do intervalo de datas e do volume de publicações. Por favor, aguarde...")
                         
@@ -167,7 +165,6 @@ if btn_buscar:
                     
                     resposta_busca = sessao.get(BUSCA_BG_URL, params=params_busca)
                     
-                    # Remove o aviso de demora assim que o servidor responde
                     aviso_demora.empty()
                     
                     if resposta_busca.status_code == 200:
@@ -176,11 +173,12 @@ if btn_buscar:
                         
                         if not lista_pubs:
                             st.write("⚠️ Nenhum boletim encontrado com o seu nome neste período.")
+                            # Expanded=True garante que a caixa continue aberta ao finalizar sem resultados
                             status_box.update(label="Busca concluída sem resultados.", state="complete", expanded=True)
                             st.session_state.mensagem_status = f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período."
                             st.session_state.busca_concluida = True
                         else:
-                            status_box.update(label="Baixando e extraindo PDFs...", state="running")
+                            status_box.update(label="Baixando e extraindo PDFs...", state="running", expanded=True)
                             st.write(f"📥 O servidor respondeu! A API retornou {len(lista_pubs)} boletim(ns). Preparando para extração...")
                             
                             barra_progresso = st.progress(0)
@@ -215,6 +213,7 @@ if btn_buscar:
                                 barra_progresso.progress((i + 1) / len(lista_pubs))
                                 
                             texto_progresso.text("✅ Processamento de todos os PDFs finalizado!")
+                            # Expanded=True garante que a caixa continue aberta ao finalizar com sucesso
                             status_box.update(label="Busca finalizada com sucesso!", state="complete", expanded=True)
                             
                             st.session_state.bgs_encontrados = bgs_com_resultados
