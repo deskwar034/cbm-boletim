@@ -107,10 +107,8 @@ with st.form("login_form"):
     
     col1, col2 = st.columns(2)
     with col1:
-        # Formato de data alterado para o padrão brasileiro
         data_inicial = st.date_input("Data Inicial", datetime.date.today() - datetime.timedelta(days=30), format="DD/MM/YYYY")
     with col2:
-        # Formato de data alterado para o padrão brasileiro
         data_final = st.date_input("Data Final", datetime.date.today(), format="DD/MM/YYYY")
         
     btn_buscar = st.form_submit_button("Entrar e Buscar")
@@ -128,11 +126,9 @@ if btn_buscar:
         st.session_state.mensagem_status = ""
 
         cpf_formatado = formatar_cpf(usuario)
-        
         data_inicial_iso = data_inicial.strftime("%Y-%m-%dT03:00:00.000Z")
         data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
-        # Expanded=True garante que a caixa inicie aberta
         with st.status("Iniciando processo...", expanded=True) as status_box:
             st.write(f"🔐 Conectando ao sistema CBMMS com usuário: {cpf_formatado} ...")
             sessao = requests.Session()
@@ -164,7 +160,6 @@ if btn_buscar:
                     }
                     
                     resposta_busca = sessao.get(BUSCA_BG_URL, params=params_busca)
-                    
                     aviso_demora.empty()
                     
                     if resposta_busca.status_code == 200:
@@ -173,7 +168,6 @@ if btn_buscar:
                         
                         if not lista_pubs:
                             st.write("⚠️ Nenhum boletim encontrado com o seu nome neste período.")
-                            # Expanded=True garante que a caixa continue aberta ao finalizar sem resultados
                             status_box.update(label="Busca concluída sem resultados.", state="complete", expanded=True)
                             st.session_state.mensagem_status = f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período."
                             st.session_state.busca_concluida = True
@@ -213,7 +207,6 @@ if btn_buscar:
                                 barra_progresso.progress((i + 1) / len(lista_pubs))
                                 
                             texto_progresso.text("✅ Processamento de todos os PDFs finalizado!")
-                            # Expanded=True garante que a caixa continue aberta ao finalizar com sucesso
                             status_box.update(label="Busca finalizada com sucesso!", state="complete", expanded=True)
                             
                             st.session_state.bgs_encontrados = bgs_com_resultados
@@ -233,7 +226,7 @@ if btn_buscar:
                 st.error(f"Erro de comunicação com o servidor: {str(e)}")
 
 # ==========================================
-# 5. EXIBIÇÃO PERSISTENTE
+# 5. EXIBIÇÃO PERSISTENTE E INSTRUÇÕES
 # ==========================================
 if st.session_state.busca_concluida:
     st.divider() 
@@ -252,6 +245,25 @@ if st.session_state.busca_concluida:
             file_name=f"Relatorio_BG_{nome_pesquisado.replace(' ', '_')}.txt",
             mime="text/plain"
         )
+        
+        # INSTRUÇÕES PARA O USUÁRIO (NOVO BLOCO)
+        st.info(f"""
+        ### 💡 Como converter este relatório em uma Planilha Editável
+        
+        Para organizar essas informações em uma tabela inteligente, siga os passos abaixo:
+        
+        **1. Faça o Download:** Clique no botão **"Baixar Relatório Completo"** logo acima para salvar o arquivo `.txt` no seu dispositivo.
+        
+        **2. Acesse o Assistente:** Abra o nosso agente especializado em conversão clicando aqui: **[Gerador de Ficha Funcional - Gemini](https://gemini.google.com/gem/18l0th8IZ2NSXTbMq0O3X49QAf1bsZlcP?usp=sharing)**.
+        
+        **3. ⚠️ Configure para Máxima Precisão (IMPORTANTE):** Ao abrir o Gemini, olhe no topo da tela e mude o modelo de "Rápido" para **"Pro"** ou **"Raciocínio"**. *Se você não fizer isso, o sistema pode pular informações importantes da sua ficha funcional durante a leitura rápida.*
+        
+        **4. Envie o Arquivo:** Clique no ícone de "+" (ou clipe de papel) no chat do Gemini, anexe o arquivo `.txt` que você baixou e aperte enter. Ele vai gerar a tabela instantaneamente.
+        
+        **5. Exporte para o Google Planilhas:** Assim que a tabela aparecer pronta na tela, role até o final dela e clique no ícone verde **"Exportar para o Planilhas"** (no canto inferior direito da tabela).
+        """)
+        
+        st.markdown("---")
         
         for bg_encontrado in bgs_resultados:
             st.subheader(f"📄 BG Nº {bg_encontrado['numero_bg']}")
