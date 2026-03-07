@@ -6,6 +6,12 @@ import datetime
 from pypdf import PdfReader
 
 # ==========================================
+# 0. CHAVE MESTRA (MODO DE TESTE)
+# ==========================================
+# Mude para False para desativar completamente a função de convite/teste
+ATIVAR_MODO_TESTE = True 
+
+# ==========================================
 # 1. CONFIGURAÇÕES DA API E SESSÃO
 # ==========================================
 BASE_URL = "https://sistemas.bombeiros.ms.gov.br"
@@ -22,12 +28,14 @@ if "nome_pesquisado" not in st.session_state:
     st.session_state.nome_pesquisado = ""
 if "mensagem_status" not in st.session_state:
     st.session_state.mensagem_status = ""
+if "modo_teste_ativo" not in st.session_state:
+    st.session_state.modo_teste_ativo = False
 
 # ==========================================
 # 2. FUNÇÕES DE FORMATAÇÃO E EXTRAÇÃO
 # ==========================================
 def formatar_cpf(cpf_bruto):
-    """Limpa a entrada do usuário e aplica a máscara oficial do CPF."""
+    """Limpa a entrada do utilizador e aplica a máscara oficial do CPF."""
     cpf_limpo = re.sub(r'\D', '', cpf_bruto)
     cpf_limpo = cpf_limpo.zfill(11)
     if len(cpf_limpo) == 11:
@@ -90,20 +98,58 @@ def gerar_relatorio_txt(bgs_com_resultados, nome_busca):
     return "\n".join(linhas)
 
 # ==========================================
-# 3. INTERFACE DO APLICATIVO
+# 3. INTERFACE DO APLICATIVO E AVISOS DE SEGURANÇA
 # ==========================================
 st.set_page_config(page_title="Buscador de BG - CBMMS", page_icon="🚒")
 
 st.title("🚒 Buscador Inteligente do BG - CBMMS")
 
+# Implementação da Solução 3 (Transparência)
+st.info("""
+**🛡️ Segurança e Privacidade (Open Source)**
+As suas credenciais de acesso comunicam diretamente com os servidores do CBMMS. Nenhuma palavra-passe é guardada ou registada nesta aplicação. O código-fonte desta ferramenta é de código aberto e está disponível para auditoria.
+""")
+
+# Bloco do Modo de Teste (Controlado pela variável ATIVAR_MODO_TESTE)
+if ATIVAR_MODO_TESTE:
+    with st.expander("🔑 Possui um Código de Convite?"):
+        st.write("Insira o código fornecido para testar a ferramenta sem utilizar o seu login pessoal.")
+        codigo_convite = st.text_input("Código de Convite", type="password")
+        colA, colB = st.columns([1, 4])
+        with colA:
+            if st.button("Validar Código"):
+                try:
+                    # Verifica no cofre se a palavra-passe coincide
+                    if codigo_convite == st.secrets["senhaAPP"]:
+                        st.session_state.modo_teste_ativo = True
+                        st.success("Acesso de teste ativado com sucesso!")
+                    else:
+                        st.error("Código inválido.")
+                except Exception:
+                    st.error("Erro ao contactar o Cofre de Segurança. Verifique a configuração dos Secrets.")
+        with colB:
+            if st.session_state.modo_teste_ativo:
+                if st.button("Sair do Modo de Teste"):
+                    st.session_state.modo_teste_ativo = False
+                    st.rerun()
+
+# Formulário Principal
 with st.form("login_form"):
     st.subheader("1. Credenciais de Acesso")
-    st.caption("Você pode digitar seu CPF com ou sem pontos.")
-    usuario = st.text_input("Login (CPF)")
-    senha = st.text_input("Senha", type="password")
     
-    st.subheader("2. Parâmetros da Busca")
-    nome_busca = st.text_input("Nome exato para buscar", value="Geraldo Roberto Dias")
+    # Se o modo de teste estiver ativo, bloqueamos os inputs visuais
+    bloquear_campos = st.session_state.modo_teste_ativo
+    
+    if bloquear_campos:
+        st.success("✅ A utilizar credenciais de teste seguras. Não é necessário preencher o CPF.")
+    else:
+        st.caption("Pode introduzir o seu CPF com ou sem pontuação.")
+        
+    usuario = st.text_input("Login (CPF)", disabled=bloquear_campos)
+    senha = st.text_input("Palavra-passe", type="password", disabled=bloquear_campos)
+    
+    st.subheader("2. Parâmetros da Pesquisa")
+    nome_busca = st.text_input("Nome exato para procurar", value="Geraldo Roberto Dias")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -117,7 +163,15 @@ with st.form("login_form"):
 # 4. LÓGICA DE REQUISIÇÕES
 # ==========================================
 if btn_buscar:
-    if not usuario or not senha or not nome_busca:
+    # Lógica para decidir quais as credenciais a usar
+    if st.session_state.modo_teste_ativo:
+        usuario_final = st.secrets["userteste"]
+        senha_final = st.secrets["senhateste"]
+    else:
+        usuario_final = formatar_cpf(usuario)
+        senha_final = senha
+        
+    if not usuario_final or not senha_final or not nome_busca:
         st.warning("Preencha todos os campos obrigatórios.")
     else:
         st.session_state.busca_concluida = False
@@ -125,15 +179,17 @@ if btn_buscar:
         st.session_state.nome_pesquisado = nome_busca
         st.session_state.mensagem_status = ""
 
-        cpf_formatado = formatar_cpf(usuario)
         data_inicial_iso = data_inicial.strftime("%Y-%m-%dT03:00:00.000Z")
         data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
-        with st.status("Iniciando processo...", expanded=True) as status_box:
-            st.write(f"🔐 Conectando ao sistema CBMMS com usuário: {cpf_formatado} ...")
+        with st.status("A iniciar processo...", expanded=True) as status_box:
+            # Esconde o CPF real do ecrã se for o utilizador teste
+            login_mostrado = "CONTA_DE_TESTE" if st.session_state.modo_teste_ativo else usuario_final
+            st.write(f"🔐 A conectar ao sistema CBMMS com utilizador: {login_mostrado} ...")
+            
             sessao = requests.Session()
             sessao.headers.update({"Content-Type": "application/json"})
-            payload_login = {"login": cpf_formatado, "senha": senha}
+            payload_login = {"login": usuario_final, "senha": senha_final}
             
             try:
                 resposta_login = sessao.post(LOGIN_URL, json=payload_login)
@@ -148,9 +204,9 @@ if btn_buscar:
                     
                     st.write("✅ Autenticação realizada com sucesso!")
                     
-                    status_box.update(label="Aguardando resposta do servidor do CBMMS...", state="running", expanded=True)
-                    st.write("📡 Consultando o banco de dados de Boletins Gerais...")
-                    aviso_demora = st.info("⏳ Esta etapa pode demorar um pouco dependendo do intervalo de datas e do volume de publicações. Por favor, aguarde...")
+                    status_box.update(label="A aguardar resposta do servidor do CBMMS...", state="running", expanded=True)
+                    st.write("📡 A consultar a base de dados de Boletins Gerais...")
+                    aviso_demora = st.info("⏳ Esta etapa pode demorar um pouco consoante o intervalo de datas e o volume de publicações. Por favor, aguarde...")
                         
                     params_busca = {
                         "de": data_inicial_iso,
@@ -168,12 +224,12 @@ if btn_buscar:
                         
                         if not lista_pubs:
                             st.write("⚠️ Nenhum boletim encontrado com o seu nome neste período.")
-                            status_box.update(label="Busca concluída sem resultados.", state="complete", expanded=True)
+                            status_box.update(label="Pesquisa concluída sem resultados.", state="complete", expanded=True)
                             st.session_state.mensagem_status = f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período."
                             st.session_state.busca_concluida = True
                         else:
-                            status_box.update(label="Baixando e extraindo PDFs...", state="running", expanded=True)
-                            st.write(f"📥 O servidor respondeu! A API retornou {len(lista_pubs)} boletim(ns). Preparando para extração...")
+                            status_box.update(label="A transferir e a extrair PDFs...", state="running", expanded=True)
+                            st.write(f"📥 O servidor respondeu! A API devolveu {len(lista_pubs)} boletim(ns). A preparar a extração...")
                             
                             barra_progresso = st.progress(0)
                             texto_progresso = st.empty()
@@ -185,7 +241,7 @@ if btn_buscar:
                                 upload_id = pub.get("upload", {}).get("id") if isinstance(pub.get("upload"), dict) else pub.get("uploadId")
                                 num_bg = pub.get("numero", "S/N")
                                 
-                                texto_progresso.text(f"🔍 Lendo e processando BG Nº {num_bg} ({i+1}/{len(lista_pubs)})...")
+                                texto_progresso.text(f"🔍 A ler e a processar BG Nº {num_bg} ({i+1}/{len(lista_pubs)})...")
                                 
                                 if upload_id:
                                     url_pdf = f"{DOWNLOAD_BG_URL}{upload_id}"
@@ -207,7 +263,7 @@ if btn_buscar:
                                 barra_progresso.progress((i + 1) / len(lista_pubs))
                                 
                             texto_progresso.text("✅ Processamento de todos os PDFs finalizado!")
-                            status_box.update(label="Busca finalizada com sucesso!", state="complete", expanded=True)
+                            status_box.update(label="Pesquisa finalizada com sucesso!", state="complete", expanded=True)
                             
                             st.session_state.bgs_encontrados = bgs_com_resultados
                             st.session_state.busca_concluida = True
@@ -215,11 +271,11 @@ if btn_buscar:
                                 st.session_state.mensagem_status = "O sistema encontrou o Boletim, mas o extrator não conseguiu isolar o parágrafo."
                                 
                     else:
-                        status_box.update(label="Erro na busca.", state="error", expanded=True)
-                        st.error("Erro ao buscar a lista de boletins. Verifique se o sistema está online.")
+                        status_box.update(label="Erro na pesquisa.", state="error", expanded=True)
+                        st.error("Erro ao pesquisar a lista de boletins. Verifique se o sistema está online.")
                 else:
                     status_box.update(label="Erro de autenticação.", state="error", expanded=True)
-                    st.error("Falha no login. Verifique suas credenciais.")
+                    st.error("Falha no login. Verifique as suas credenciais.")
                     
             except Exception as e:
                 status_box.update(label="Erro interno.", state="error", expanded=True)
@@ -235,7 +291,7 @@ if st.session_state.busca_concluida:
     nome_pesquisado = st.session_state.nome_pesquisado
     
     if bgs_resultados:
-        st.success(f"Encontramos suas publicações em {len(bgs_resultados)} boletim(ns)!")
+        st.success(f"Encontrámos as suas publicações em {len(bgs_resultados)} boletim(ns)!")
         
         texto_relatorio = gerar_relatorio_txt(bgs_resultados, nome_pesquisado)
         
@@ -246,21 +302,20 @@ if st.session_state.busca_concluida:
             mime="text/plain"
         )
         
-        # INSTRUÇÕES PARA O USUÁRIO (NOVO BLOCO)
         st.info(f"""
-        ### 💡 Como converter este relatório em uma Planilha Editável
+        ### 💡 Como converter este relatório numa Planilha Editável
         
-        Para organizar essas informações em uma tabela inteligente, siga os passos abaixo:
+        Para organizar estas informações numa tabela inteligente, siga os passos abaixo:
         
-        **1. Faça o Download:** Clique no botão **"Baixar Relatório Completo"** logo acima para salvar o arquivo `.txt` no seu dispositivo.
+        **1. Faça o Download:** Clique no botão **"Baixar Relatório Completo"** logo acima para guardar o ficheiro `.txt` no seu dispositivo.
         
-        **2. Acesse o Assistente:** Abra o nosso agente especializado em conversão clicando aqui: **[Gerador de Ficha Funcional - Gemini](https://gemini.google.com/gem/18l0th8IZ2NSXTbMq0O3X49QAf1bsZlcP?usp=sharing)**.
+        **2. Aceda ao Assistente:** Abra o nosso agente especializado em conversão clicando aqui: **[Gerador de Ficha Funcional - Gemini](https://gemini.google.com/gem/18l0th8IZ2NSXTbMq0O3X49QAf1bsZlcP?usp=sharing)**.
         
-        **3. ⚠️ Configure para Máxima Precisão (IMPORTANTE):** Ao abrir o Gemini, olhe no topo da tela e mude o modelo de "Rápido" para **"Pro"** ou **"Raciocínio"**. *Se você não fizer isso, o sistema pode pular informações importantes da sua ficha funcional durante a leitura rápida.*
+        **3. ⚠️ Configure para Máxima Precisão (IMPORTANTE):** Ao abrir o Gemini, olhe no topo do ecrã e altere o modelo de "Rápido" para **"Pro"** ou **"Raciocínio"**. *Se não o fizer, o sistema pode ignorar informações importantes da sua ficha funcional durante a leitura rápida.*
         
-        **4. Envie o Arquivo:** Clique no ícone de "+" (ou clipe de papel) no chat do Gemini, anexe o arquivo `.txt` que você baixou e aperte enter. Ele vai gerar a tabela instantaneamente.
+        **4. Envie o Ficheiro:** Clique no ícone de "+" (ou clipe de papel) no chat do Gemini, anexe o ficheiro `.txt` que descarregou e pressione Enter. O sistema irá gerar a tabela instantaneamente.
         
-        **5. Exporte para o Google Planilhas:** Assim que a tabela aparecer pronta na tela, role até o final dela e clique no ícone verde **"Exportar para o Planilhas"** (no canto inferior direito da tabela).
+        **5. Exporte para o Google Planilhas:** Assim que a tabela aparecer pronta no ecrã, desloque-se até ao final da mesma e clique no ícone verde **"Exportar para o Planilhas"** (no canto inferior direito da tabela).
         """)
         
         st.markdown("---")
