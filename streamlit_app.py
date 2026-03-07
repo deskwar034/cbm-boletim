@@ -8,7 +8,6 @@ from pypdf import PdfReader
 # ==========================================
 # 0. CHAVE MESTRA (MODO DE TESTE)
 # ==========================================
-# Mude para False para desativar completamente a função de convite/teste
 ATIVAR_MODO_TESTE = True 
 
 # ==========================================
@@ -35,7 +34,6 @@ if "modo_teste_ativo" not in st.session_state:
 # 2. FUNÇÕES DE FORMATAÇÃO E EXTRAÇÃO
 # ==========================================
 def formatar_cpf(cpf_bruto):
-    """Limpa a entrada do utilizador e aplica a máscara oficial do CPF."""
     cpf_limpo = re.sub(r'\D', '', cpf_bruto)
     cpf_limpo = cpf_limpo.zfill(11)
     if len(cpf_limpo) == 11:
@@ -98,19 +96,17 @@ def gerar_relatorio_txt(bgs_com_resultados, nome_busca):
     return "\n".join(linhas)
 
 # ==========================================
-# 3. INTERFACE DO APLICATIVO E AVISOS DE SEGURANÇA
+# 3. INTERFACE DO APLICATIVO E AVISOS
 # ==========================================
 st.set_page_config(page_title="Buscador de BG - CBMMS", page_icon="🚒")
 
 st.title("🚒 Buscador Inteligente do BG - CBMMS")
 
-# Implementação da Solução 3 (Transparência)
 st.info("""
 **🛡️ Segurança e Privacidade (Open Source)**
 As suas credenciais de acesso comunicam diretamente com os servidores do CBMMS. Nenhuma palavra-passe é guardada ou registada nesta aplicação. O código-fonte desta ferramenta é de código aberto e está disponível para auditoria.
 """)
 
-# Bloco do Modo de Teste (Controlado pela variável ATIVAR_MODO_TESTE)
 if ATIVAR_MODO_TESTE:
     with st.expander("🔑 Possui um Código de Convite?"):
         st.write("Insira o código fornecido para testar a ferramenta sem utilizar o seu login pessoal.")
@@ -119,7 +115,6 @@ if ATIVAR_MODO_TESTE:
         with colA:
             if st.button("Validar Código"):
                 try:
-                    # Verifica no cofre se a palavra-passe coincide
                     if codigo_convite == st.secrets["senhaAPP"]:
                         st.session_state.modo_teste_ativo = True
                         st.success("Acesso de teste ativado com sucesso!")
@@ -133,11 +128,8 @@ if ATIVAR_MODO_TESTE:
                     st.session_state.modo_teste_ativo = False
                     st.rerun()
 
-# Formulário Principal
 with st.form("login_form"):
     st.subheader("1. Credenciais de Acesso")
-    
-    # Se o modo de teste estiver ativo, bloqueamos os inputs visuais
     bloquear_campos = st.session_state.modo_teste_ativo
     
     if bloquear_campos:
@@ -149,13 +141,31 @@ with st.form("login_form"):
     senha = st.text_input("Palavra-passe", type="password", disabled=bloquear_campos)
     
     st.subheader("2. Parâmetros da Pesquisa")
-    nome_busca = st.text_input("Nome exato para procurar", value="Geraldo Roberto Dias")
+    
+    # === ALTERAÇÃO NO NOME ===
+    nome_busca = st.text_input("Nome completo exato a procurar", placeholder="Ex: João da Silva")
     
     col1, col2 = st.columns(2)
+    
+    # === ALTERAÇÕES NAS DATAS ===
+    data_limite_inferior = datetime.date(2018, 7, 17)
+    texto_ajuda_data = "Busca por conteúdo nas publicações, exceto nos suplementos, somente a partir de 17 de julho de 2018, boletins anteriores a essa data continuam disponíveis em http://www.boletim.cbm.ms.gov.br e essa ferramenta ainda não busca neste sistema legado."
+
     with col1:
-        data_inicial = st.date_input("Data Inicial", datetime.date.today() - datetime.timedelta(days=30), format="DD/MM/YYYY")
+        data_inicial = st.date_input(
+            "Data Inicial", 
+            value=data_limite_inferior, 
+            min_value=data_limite_inferior, 
+            format="DD/MM/YYYY",
+            help=texto_ajuda_data
+        )
     with col2:
-        data_final = st.date_input("Data Final", datetime.date.today(), format="DD/MM/YYYY")
+        data_final = st.date_input(
+            "Data Final", 
+            value=datetime.date.today(), 
+            min_value=data_limite_inferior,
+            format="DD/MM/YYYY"
+        )
         
     btn_buscar = st.form_submit_button("Entrar e Buscar")
 
@@ -163,7 +173,6 @@ with st.form("login_form"):
 # 4. LÓGICA DE REQUISIÇÕES
 # ==========================================
 if btn_buscar:
-    # Lógica para decidir quais as credenciais a usar
     if st.session_state.modo_teste_ativo:
         usuario_final = st.secrets["userteste"]
         senha_final = st.secrets["senhateste"]
@@ -183,7 +192,6 @@ if btn_buscar:
         data_final_iso = data_final.strftime("%Y-%m-%dT03:00:00.000Z")
         
         with st.status("A iniciar processo...", expanded=True) as status_box:
-            # Esconde o CPF real do ecrã se for o utilizador teste
             login_mostrado = "CONTA_DE_TESTE" if st.session_state.modo_teste_ativo else usuario_final
             st.write(f"🔐 A conectar ao sistema CBMMS com utilizador: {login_mostrado} ...")
             
