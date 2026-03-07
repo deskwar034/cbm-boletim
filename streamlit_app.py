@@ -15,14 +15,16 @@ BUSCA_BG_URL = f"{BASE_URL}/ws-boletim-geral/publicacao"
 DOWNLOAD_BG_URL = f"{BASE_URL}/ws-alfresco/arquivo/"
 
 # ==========================================
-# 2. FUNÇÃO DE EXTRAÇÃO (Regex Refinado)
+# 2. FUNÇÃO DE EXTRAÇÃO
 # ==========================================
 def extrair_alteracoes_exatas(texto_bg, nome_militar):
     blocos_de_nota = re.split(r'(?i)NOTA N\.\s*', texto_bg)
     resultados = []
     
     for bloco in blocos_de_nota:
-        if re.search(nome_militar, bloco, re.IGNORECASE):
+        # Busca flexível ignorando quebras de linha no meio do nome
+        nome_regex = re.escape(nome_militar).replace(r'\ ', r'\s+')
+        if re.search(nome_regex, bloco, re.IGNORECASE):
             match_nota = re.match(r'(\d+)', bloco)
             numero_nota = match_nota.group(1) if match_nota else "Desconhecida"
             
@@ -33,7 +35,7 @@ def extrair_alteracoes_exatas(texto_bg, nome_militar):
             itens_encontrados = []
             
             for item in itens:
-                if re.search(nome_militar, item, re.IGNORECASE):
+                if re.search(nome_regex, item, re.IGNORECASE):
                     item_limpo = re.sub(r'\s+', ' ', item).strip()
                     item_limpo = re.sub(r';$', '.', item_limpo)
                     itens_encontrados.append(item_limpo)
@@ -48,12 +50,11 @@ def extrair_alteracoes_exatas(texto_bg, nome_militar):
     return resultados
 
 # ==========================================
-# 3. INTERFACE DO APLICATIVO (Streamlit)
+# 3. INTERFACE DO APLICATIVO
 # ==========================================
 st.set_page_config(page_title="Buscador de BG - CBMMS", page_icon="🚒")
 
 st.title("🚒 Buscador Inteligente do BG - CBMMS")
-st.markdown("Busca automatizada de alterações funcionais no Boletim Geral.")
 
 with st.form("login_form"):
     st.subheader("1. Credenciais de Acesso")
@@ -72,84 +73,67 @@ with st.form("login_form"):
     btn_buscar = st.form_submit_button("Entrar e Buscar")
 
 # ==========================================
-# 4. LÓGICA DE NAVEGAÇÃO E REQUISIÇÕES
+# 4. LÓGICA DE REQUISIÇÕES E LOGS
 # ==========================================
 if btn_buscar:
     if not usuario or not senha or not nome_busca:
         st.warning("Preencha todos os campos obrigatórios.")
     else:
-        # Formata as datas para o padrão ISO exigido pela API
         data_inicial_iso = data_inicial.strftime("%Y-%m-%dT00:00:00.000Z")
         data_final_iso = data_final.strftime("%Y-%m-%dT23:59:59.999Z")
         
-        with st.spinner("Autenticando no sistema CBMMS..."):
+        # Variáveis para armazenar logs que serão exibidos no final
+        logs_debug = []
+        
+        with st.spinner("Conectando e buscando..."):
             sessao = requests.Session()
             sessao.headers.update({"Content-Type": "application/json"})
-            
-            payload_login = {
-                "login": usuario,
-                "senha": senha
-            }
+            payload_login = {"login": usuario, "senha": senha}
             
             try:
-                # Passo 1: Login
                 resposta_login = sessao.post(LOGIN_URL, json=payload_login)
+                logs_debug.append(f"HTTP Status Login: {resposta_login.status_code}")
                 
                 if resposta_login.status_code == 200:
                     dados_login = resposta_login.json()
                     
-                    # Correção de Segurança: Verifica se a resposta é lista ou dicionário antes de buscar o token
                     token = None
-                    if isinstance(dados_login, dict):
-                        token = dados_login.get("token")
-                    elif isinstance(dados_login, list) and len(dados_login) > 0 and isinstance(dados_login[0], dict):
-                        token = dados_login[0].get("token")
-                    
-                    # Se não achou no corpo, tenta achar no Header
-                    if not token:
-                        token = resposta_login.headers.get("token")
-
-                    # Se encontrou algum token, injeta na sessão
-                    if token:
-                        sessao.headers.update({"token": token})
+                    if isinstance(dados_login, dict): token = dados_login.get("token")
+                    elif isinstance(dados_login, list) and len(dados_login) > 0 and isinstance(dados_login[0], dict): token = dados_login[0].get("token")
+                    if not token: token = resposta_login.headers.get("token")
+                    if token: sessao.headers.update({"token": token})
                         
-                    st.success("Autenticação realizada com sucesso!")
-                    
-                    # Passo 2: Buscar BGs no intervalo de datas
-                    st.info(f"Buscando boletins entre {data_inicial.strftime('%d/%m/%Y')} e {data_final.strftime('%d/%m/%Y')}...")
+                    # PARÂMETROS DA BUSCA (Adicionado um chute para a chave do texto)
                     params_busca = {
                         "de": data_inicial_iso,
                         "ate": data_final_iso,
-                        "tipo": "buscaExata"
+                        "tipo": "buscaExata",
+                        "palavra": nome_busca, # Testando se a API aceita 'palavra'
+                        "texto": nome_busca    # Testando se a API aceita 'texto'
                     }
                     
                     resposta_busca = sessao.get(BUSCA_BG_URL, params=params_busca)
+                    logs_debug.append(f"URL de Busca Chamada: {resposta_busca.url}")
+                    logs_debug.append(f"HTTP Status Busca: {resposta_busca.status_code}")
                     
                     if resposta_busca.status_code == 200:
                         publicacoes_brutas = resposta_busca.json()
+                        lista_pubs = publicacoes_brutas if isinstance(publicacoes_brutas, list) else publicacoes_brutas.get("content", publicacoes_brutas.get("data", []))
                         
-                        # Correção de Segurança para a busca: Garante que estamos iterando sobre uma lista válida
-                        lista_pubs = []
-                        if isinstance(publicacoes_brutas, list):
-                            lista_pubs = publicacoes_brutas
-                        elif isinstance(publicacoes_brutas, dict):
-                            # Se a API jogar o resultado dentro de "content" ou "data" (padrão de paginação)
-                            lista_pubs = publicacoes_brutas.get("content", publicacoes_brutas.get("data", []))
+                        logs_debug.append(f"Total de itens retornados pela API: {len(lista_pubs)}")
                         
                         if not lista_pubs:
                             st.warning("Nenhum Boletim Geral encontrado neste período.")
                         else:
-                            st.write(f"Encontrados {len(lista_pubs)} boletins. Iniciando leitura...")
                             encontrou_algo = False
+                            st.write(f"Baixando e analisando {len(lista_pubs)} boletim(ns)...")
                             
-                            # Passo 3: Baixar e processar cada PDF encontrado
-                            for pub in lista_pubs:
-                                # Previne erros caso um item da lista não seja dicionário
-                                if not isinstance(pub, dict):
-                                    continue
-                                    
+                            for index, pub in enumerate(lista_pubs):
+                                if not isinstance(pub, dict): continue
+                                
                                 upload_id = pub.get("upload", {}).get("id") if isinstance(pub.get("upload"), dict) else pub.get("uploadId")
                                 num_bg = pub.get("numero", "S/N")
+                                logs_debug.append(f"Processando BG Nº {num_bg} | Upload ID: {upload_id}")
                                 
                                 if upload_id:
                                     url_pdf = f"{DOWNLOAD_BG_URL}{upload_id}"
@@ -158,14 +142,20 @@ if btn_buscar:
                                     if resposta_pdf.status_code == 200:
                                         arquivo_pdf = io.BytesIO(resposta_pdf.content)
                                         leitor = PdfReader(arquivo_pdf)
+                                        texto_completo = "".join(pagina.extract_text() + "\n" for pagina in leitor.pages)
                                         
-                                        texto_completo = ""
-                                        for pagina in leitor.pages:
-                                            texto_completo += pagina.extract_text() + "\n"
+                                        # LOG ESPECIAL: Mostra um pedaço do PDF do primeiro BG para vermos se a extração funcionou
+                                        if index == 0:
+                                            logs_debug.append(f"\n--- AMOSTRA DE TEXTO EXTRAÍDO DO BG {num_bg} ---\n{texto_completo[:1000]}\n-----------------------------------------")
+                                            
+                                        # LOG ESPECIAL: Tenta achar o nome puro no texto cru para ver se é culpa do Regex
+                                        if nome_busca.lower() in texto_completo.lower():
+                                            logs_debug.append(f"O nome '{nome_busca}' FOI ENCONTRADO no texto bruto do BG {num_bg} (o erro é no Regex).")
+                                        else:
+                                            logs_debug.append(f"O nome '{nome_busca}' NÃO ESTÁ no texto bruto do BG {num_bg} (a API baixou um arquivo que não tem seu nome).")
                                             
                                         resultados = extrair_alteracoes_exatas(texto_completo, nome_busca)
                                         
-                                        # Passo 4: Exibe os resultados
                                         if resultados:
                                             encontrou_algo = True
                                             st.subheader(f"📄 BG Nº {num_bg}")
@@ -176,11 +166,16 @@ if btn_buscar:
                                                         st.error(item)
                                                         
                             if not encontrou_algo:
-                                st.success(f"Busca finalizada! O nome '{nome_busca}' não consta nos boletins deste período.")
+                                st.info(f"Busca finalizada! O nome '{nome_busca}' não foi identificado pelo extrator de texto.")
                     else:
                         st.error("Erro ao buscar a lista de boletins.")
                 else:
-                    st.error(f"Falha no login. O sistema retornou o código: {resposta_login.status_code}")
+                    st.error("Falha no login.")
                     
             except Exception as e:
-                st.error(f"Ocorreu um erro de comunicação com o servidor: {e}")
+                st.error("Erro de comunicação com o servidor.")
+                logs_debug.append(f"EXCEÇÃO: {str(e)}")
+
+        # Exibe o painel de logs para você copiar e colar
+        with st.expander("🛠️ Logs de Depuração (Copie e cole para o chat)", expanded=False):
+            st.code("\n".join(logs_debug), language="text")
