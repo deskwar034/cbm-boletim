@@ -356,21 +356,25 @@ def autenticar(sessao: requests.Session, usuario: str, senha: str) -> None:
     if resposta.status_code != 200:
         raise ValueError("Falha no login. Verifique as suas credenciais.")
 
-    dados_login = resposta.json()
     token = None
 
-    if isinstance(dados_login, dict):
-        token = dados_login.get("token")
-    elif isinstance(dados_login, list) and dados_login and isinstance(dados_login[0], dict):
-        token = dados_login[0].get("token")
+    try:
+        dados_login = resposta.json()
+
+        if isinstance(dados_login, dict):
+            token = dados_login.get("token")
+        elif isinstance(dados_login, list) and dados_login and isinstance(dados_login[0], dict):
+            token = dados_login[0].get("token")
+    except Exception:
+        token = None
 
     if not token:
         token = resposta.headers.get("token")
 
-    if not token:
-        raise ValueError("Autenticação realizada, mas o token não foi retornado pelo servidor.")
-
-    sessao.headers.update({"token": token})
+    # Mantém a mesma lógica do script anterior:
+    # usa o token se existir, mas não falha se não vier.
+    if token:
+        sessao.headers.update({"token": token})
 
 def buscar_publicacoes(sessao: requests.Session, nome_busca: str, data_inicial, data_final) -> list[dict]:
     params_busca = {
@@ -501,14 +505,14 @@ if btn_buscar:
             sessao = requests.Session()
             sessao.headers.update({"Content-Type": "application/json"})
 
-            try:
-                autenticar(sessao, usuario_final, senha_final)
-                st.write("✅ Autenticação realizada com sucesso!")
+try:
+    autenticar(sessao, usuario_final, senha_final)
+    st.write("✅ Autenticação realizada com sucesso!")
 
-                status_box.update(label="Consultando boletins...", state="running", expanded=True)
-                aviso_demora = st.info("⏳ Consultando os boletins no período informado...")
-                lista_pubs = buscar_publicacoes(sessao, nome_busca, data_inicial, data_final)
-                aviso_demora.empty()
+    status_box.update(label="Consultando boletins...", state="running", expanded=True)
+    aviso_demora = st.info("⏳ Consultando os boletins no período informado...")
+    lista_pubs = buscar_publicacoes(sessao, nome_busca, data_inicial, data_final)
+    aviso_demora.empty()
 
                 if not lista_pubs:
                     st.session_state.busca_concluida = True
