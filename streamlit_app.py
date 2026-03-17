@@ -19,7 +19,7 @@ LOGIN_URL = f"{BASE_URL}/ws-auth/fazer-login"
 BUSCA_BG_URL = f"{BASE_URL}/ws-boletim-geral/publicacao"
 DOWNLOAD_BG_URL = f"{BASE_URL}/ws-alfresco/arquivo/"
 
-REQUEST_TIMEOUT = (15, 90)
+REQUEST_TIMEOUT = (15, none)
 
 # ==========================================
 # 2. ESTADO INICIAL
