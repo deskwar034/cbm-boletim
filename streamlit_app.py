@@ -37,36 +37,50 @@ def inicializar_estado():
         if chave not in st.session_state:
             st.session_state[chave] = valor
 
+
 inicializar_estado()
 
 # ==========================================
-# 3. REGEX E HELPERS DE TEXTO
+# 3. HELPERS / REGEX
 # ==========================================
 RE_NOTA = re.compile(r"^\s*NOTA\s+N\.\s*(\d+)\s*$", re.IGNORECASE)
-RE_FOOTER = re.compile(r"BOLETIM GERAL N\.\s+\d+.*?P[ÁA]GINA\s+\d+\s*/\s*\d+", re.IGNORECASE)
+RE_FOOTER = re.compile(
+    r"BOLETIM GERAL N\.\s+\d+.*?P[ÁA]GINA\s+\d+\s*/\s*\d+",
+    re.IGNORECASE
+)
 RE_ATTACHMENT = re.compile(r".+\.(pdf|docx?|xlsx?|jpg|jpeg|png)$", re.IGNORECASE)
 
 RE_MILITAR_LISTA = re.compile(
-    r"^(?:\dº\s*)?(?:CEL|TC|TEN\s*CEL|MAJ|CAP|ASP|1º TEN|2º TEN|ST|1º SGT|2º SGT|3º SGT|CB|SD)\s+BM\b",
+    r"^(?:\dº\s*)?(?:CEL|TEN\s*CEL|TC|MAJ|CAP|ASP|1º TEN|2º TEN|ST|1º SGT|2º SGT|3º SGT|CB|SD)\s+BM\b",
     re.IGNORECASE,
 )
 
 RE_CABECALHOS_FIXOS = [
     re.compile(r"^ESTADO DE MATO GROSSO DO SUL$", re.IGNORECASE),
     re.compile(r"^SECRETARIA DE ESTADO", re.IGNORECASE),
-    re.compile(r"^CORPO DE BOMBEIROS MILITAR$", re.IGNORECASE),
+    re.compile(r"^CORPO DE BOMBEIROS MILITAR", re.IGNORECASE),
     re.compile(r"^BOLETIM GERAL$", re.IGNORECASE),
     re.compile(r"^ANO\s+\d{4}\s+N\.\s+\d+", re.IGNORECASE),
     re.compile(r"^COMANDANTE-GERAL:", re.IGNORECASE),
     re.compile(r"^CHEFE DO ESTADO MAIOR GERAL:", re.IGNORECASE),
 ]
 
+RE_LINHAS_LIXO = [
+    re.compile(r"^P[ÁA]GINA\s+\d+\s*/\s*\d+$", re.IGNORECASE),
+    re.compile(r"^\d{1,2}\s+DE\s+\w+\s+DE\s+\d{4}$", re.IGNORECASE),
+    re.compile(r"^BOLETIM GERAL N\.\s+\d+$", re.IGNORECASE),
+]
+
+# ==========================================
+# 4. FUNÇÕES DE FORMATAÇÃO / NORMALIZAÇÃO
+# ==========================================
 def formatar_cpf(cpf_bruto: str) -> str:
     cpf_limpo = re.sub(r"\D", "", cpf_bruto or "")
     cpf_limpo = cpf_limpo.zfill(11)
     if len(cpf_limpo) == 11:
         return f"{cpf_limpo[:3]}.{cpf_limpo[3:6]}.{cpf_limpo[6:9]}-{cpf_limpo[9:]}"
     return cpf_bruto
+
 
 def normalizar_unicode(texto: str) -> str:
     if not texto:
@@ -77,7 +91,6 @@ def normalizar_unicode(texto: str) -> str:
         "\u00AD": "",
         "\u200B": "",
         "\ufeff": "",
-        "￾": "",
         "–": "-",
         "—": "-",
         "“": '"',
@@ -95,9 +108,10 @@ def normalizar_unicode(texto: str) -> str:
     })
     texto = texto.translate(mapa_letras)
 
+    # corrige falsos caracteres na palavra NOTA
     texto = re.sub(r"[ΝN][ΟO][ΤT][ΑA]\s+[NΝ]\.", "NOTA N.", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"\s+", " ", texto).strip()
     return texto
+
 
 def normalizar_para_match(texto: str) -> str:
     texto = unicodedata.normalize("NFKD", texto or "")
@@ -107,9 +121,11 @@ def normalizar_para_match(texto: str) -> str:
     texto = re.sub(r"\s+", " ", texto).strip()
     return texto
 
+
 def regex_nome_flexivel(nome: str) -> str:
     partes = [re.escape(p) for p in re.split(r"\s+", nome.strip()) if p]
     return r"\b" + r"\s+".join(partes) + r"\b"
+
 
 def nome_aparece_no_bloco(texto_bloco: str, nome_militar: str) -> bool:
     if not texto_bloco or not nome_militar:
@@ -134,6 +150,9 @@ def nome_aparece_no_bloco(texto_bloco: str, nome_militar: str) -> bool:
     hits = sum(1 for t in tokens_nome if t in texto_match)
     return (hits / len(tokens_nome)) >= 0.75
 
+# ==========================================
+# 5. EXTRAÇÃO DO PDF
+# ==========================================
 def linha_eh_titulo(linha: str) -> bool:
     linha = (linha or "").strip()
     if not linha:
@@ -148,7 +167,7 @@ def linha_eh_titulo(linha: str) -> bool:
         return False
     if linha.endswith((".", ";", ":")):
         return False
-    if len(linha) > 90:
+    if len(linha) > 100:
         return False
 
     letras = [c for c in linha if c.isalpha()]
@@ -158,7 +177,8 @@ def linha_eh_titulo(linha: str) -> bool:
     maiusculas = sum(1 for c in letras if c.isupper())
     proporcao = maiusculas / len(letras)
 
-    return proporcao >= 0.65 or (proporcao >= 0.45 and len(linha.split()) <= 6)
+    return proporcao >= 0.65 or (proporcao >= 0.45 and len(linha.split()) <= 7)
+
 
 def limpar_linhas_pagina(texto_pagina: str) -> list[str]:
     texto_pagina = (texto_pagina or "").replace("\r", "\n")
@@ -168,30 +188,41 @@ def limpar_linhas_pagina(texto_pagina: str) -> list[str]:
     for linha in linhas_originais:
         linha = normalizar_unicode(linha)
         linha = re.sub(r"[ \t]+", " ", linha).strip()
+
         if not linha:
             continue
+
         if RE_FOOTER.search(linha):
             continue
+
         if any(p.search(linha) for p in RE_CABECALHOS_FIXOS):
             continue
+
+        if any(p.search(linha) for p in RE_LINHAS_LIXO):
+            continue
+
         linhas.append(linha)
 
     return linhas
 
+
 def extrair_linhas_do_pdf(pdf_bytes: bytes) -> list[str]:
     leitor = PdfReader(io.BytesIO(pdf_bytes))
     linhas = []
+
     for pagina in leitor.pages:
         texto = pagina.extract_text() or ""
         linhas.extend(limpar_linhas_pagina(texto))
+
     return linhas
+
 
 def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, str, int]:
     """
     Retorna:
     - setor/contexto administrativo
     - assunto/título imediato da nota
-    - índice inicial do bloco, para incluir o assunto antes da NOTA
+    - índice inicial do bloco
     """
     j = idx_nota - 1
     assunto = []
@@ -209,12 +240,18 @@ def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, st
         if not linha:
             k -= 1
             continue
-        if RE_NOTA.match(linha) or RE_ATTACHMENT.match(linha) or RE_MILITAR_LISTA.match(linha):
+
+        if RE_NOTA.match(linha):
+            break
+        if RE_ATTACHMENT.match(linha):
+            break
+        if RE_MILITAR_LISTA.match(linha):
             break
         if re.search(r"^ADM\.$|Aprovado por:|Militares Relacionados com a Nota|Responsável pelo ato", linha, re.IGNORECASE):
             break
         if len(linha) > 100 or linha.endswith((".", ";", ":")):
             break
+
         setor.insert(0, linha)
         k -= 1
 
@@ -224,12 +261,11 @@ def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, st
 
     return setor_str, assunto_str, idx_inicio_bloco
 
+
 def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
     """
-    Mantém a nota até o último militar em
+    Mantém o bloco até o último militar da seção
     'Militares Relacionados com a Nota'.
-
-    Se existir arquivo anexo (.pdf) logo depois da lista, ele é removido.
     """
     marcador = None
     for i, linha in enumerate(linhas_bloco):
@@ -241,6 +277,7 @@ def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
         return linhas_bloco
 
     ultimo_indice_util = marcador
+
     for i in range(marcador + 1, len(linhas_bloco)):
         linha = linhas_bloco[i].strip()
 
@@ -264,10 +301,12 @@ def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
         if linha_eh_titulo(linha):
             break
 
+        # tolera uma linha curta logo após a lista, mas para se começar outro bloco
         if i > marcador + 1:
             break
 
     return linhas_bloco[:ultimo_indice_util + 1]
+
 
 def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
     notas = []
@@ -281,12 +320,13 @@ def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
         setor, assunto, idx_inicio = extrair_contexto_pre_nota(linhas_pdf, idx_nota)
         match_num = RE_NOTA.match(linhas_pdf[idx_nota])
         numero = match_num.group(1) if match_num else "Desconhecida"
+
         metadados.append({
             "idx_nota": idx_nota,
             "idx_inicio": idx_inicio,
             "numero": numero,
             "setor": setor,
-            "assunto": assunto,
+            "cabecalho": assunto or "Sem assunto identificado",
         })
 
     for pos, meta in enumerate(metadados):
@@ -296,14 +336,17 @@ def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
         linhas_bloco = linhas_pdf[inicio:fim]
         linhas_bloco = aparar_bloco_ate_ultimo_militar(linhas_bloco)
 
+        texto_completo = "\n".join(linhas_bloco).strip()
+
         notas.append({
             "nota": meta["numero"],
             "setor": meta["setor"],
-            "cabecalho": meta["assunto"] or "Sem assunto identificado",
-            "texto_completo": "\n".join(linhas_bloco).strip(),
+            "cabecalho": meta["cabecalho"],
+            "texto_completo": texto_completo,
         })
 
     return notas
+
 
 def extrair_notas_do_militar(pdf_bytes: bytes, nome_militar: str) -> list[dict]:
     linhas_pdf = extrair_linhas_do_pdf(pdf_bytes)
@@ -316,6 +359,9 @@ def extrair_notas_do_militar(pdf_bytes: bytes, nome_militar: str) -> list[dict]:
 
     return resultados
 
+# ==========================================
+# 6. RELATÓRIO TXT
+# ==========================================
 def gerar_relatorio_txt(bgs_com_resultados: list[dict], nome_busca: str) -> str:
     linhas = []
     linhas.append("=" * 70)
@@ -347,9 +393,15 @@ def gerar_relatorio_txt(bgs_com_resultados: list[dict], nome_busca: str) -> str:
     return "\n".join(linhas)
 
 # ==========================================
-# 4. COMUNICAÇÃO COM A API
+# 7. COMUNICAÇÃO COM A API
 # ==========================================
 def autenticar(sessao: requests.Session, usuario: str, senha: str) -> None:
+    """
+    Mantém a mesma lógica do seu script anterior:
+    - se status_code == 200, considera login OK
+    - usa token se vier
+    - não falha se o token não vier
+    """
     payload_login = {"login": usuario, "senha": senha}
     resposta = sessao.post(LOGIN_URL, json=payload_login, timeout=REQUEST_TIMEOUT)
 
@@ -360,10 +412,9 @@ def autenticar(sessao: requests.Session, usuario: str, senha: str) -> None:
 
     try:
         dados_login = resposta.json()
-
         if isinstance(dados_login, dict):
             token = dados_login.get("token")
-        elif isinstance(dados_login, list) and dados_login and isinstance(dados_login[0], dict):
+        elif isinstance(dados_login, list) and len(dados_login) > 0 and isinstance(dados_login[0], dict):
             token = dados_login[0].get("token")
     except Exception:
         token = None
@@ -371,10 +422,9 @@ def autenticar(sessao: requests.Session, usuario: str, senha: str) -> None:
     if not token:
         token = resposta.headers.get("token")
 
-    # Mantém a mesma lógica do script anterior:
-    # usa o token se existir, mas não falha se não vier.
     if token:
         sessao.headers.update({"token": token})
+
 
 def buscar_publicacoes(sessao: requests.Session, nome_busca: str, data_inicial, data_final) -> list[dict]:
     params_busca = {
@@ -395,14 +445,17 @@ def buscar_publicacoes(sessao: requests.Session, nome_busca: str, data_inicial, 
 
     return publicacoes_brutas.get("content", publicacoes_brutas.get("data", []))
 
+
 def baixar_pdf(sessao: requests.Session, upload_id: str) -> bytes:
     resposta = sessao.get(f"{DOWNLOAD_BG_URL}{upload_id}", timeout=REQUEST_TIMEOUT)
+
     if resposta.status_code != 200:
         raise ValueError(f"Não foi possível baixar o PDF do upload {upload_id}.")
+
     return resposta.content
 
 # ==========================================
-# 5. INTERFACE
+# 8. INTERFACE
 # ==========================================
 st.set_page_config(page_title="Buscador de BG - CBMMS", page_icon="🚒")
 st.title("🚒 Buscador Inteligente do BG - CBMMS")
@@ -431,9 +484,10 @@ if ATIVAR_MODO_TESTE:
                     st.error("Erro ao validar o código de convite nos Secrets.")
 
         with colB:
-            if st.session_state.modo_teste_ativo and st.button("Sair do Modo de Teste"):
-                st.session_state.modo_teste_ativo = False
-                st.rerun()
+            if st.session_state.modo_teste_ativo:
+                if st.button("Sair do Modo de Teste"):
+                    st.session_state.modo_teste_ativo = False
+                    st.rerun()
 
 with st.form("login_form"):
     st.subheader("1. Credenciais de Acesso")
@@ -451,6 +505,7 @@ with st.form("login_form"):
     nome_busca = st.text_input("Nome completo exato a procurar", placeholder="Ex: João da Silva")
 
     col1, col2 = st.columns(2)
+
     data_limite_inferior = datetime.date(2018, 7, 17)
     texto_ajuda_data = (
         "Busca por conteúdo nas publicações, exceto nos suplementos, somente a partir de 17/07/2018. "
@@ -477,7 +532,7 @@ with st.form("login_form"):
     btn_buscar = st.form_submit_button("Entrar e Buscar")
 
 # ==========================================
-# 6. LÓGICA PRINCIPAL
+# 9. LÓGICA PRINCIPAL
 # ==========================================
 if btn_buscar:
     if st.session_state.modo_teste_ativo:
@@ -505,14 +560,14 @@ if btn_buscar:
             sessao = requests.Session()
             sessao.headers.update({"Content-Type": "application/json"})
 
-try:
-    autenticar(sessao, usuario_final, senha_final)
-    st.write("✅ Autenticação realizada com sucesso!")
+            try:
+                autenticar(sessao, usuario_final, senha_final)
+                st.write("✅ Autenticação realizada com sucesso!")
 
-    status_box.update(label="Consultando boletins...", state="running", expanded=True)
-    aviso_demora = st.info("⏳ Consultando os boletins no período informado...")
-    lista_pubs = buscar_publicacoes(sessao, nome_busca, data_inicial, data_final)
-    aviso_demora.empty()
+                status_box.update(label="Consultando boletins...", state="running", expanded=True)
+                aviso_demora = st.info("⏳ Consultando os boletins no período informado...")
+                lista_pubs = buscar_publicacoes(sessao, nome_busca, data_inicial, data_final)
+                aviso_demora.empty()
 
                 if not lista_pubs:
                     st.session_state.busca_concluida = True
@@ -530,6 +585,7 @@ try:
 
                     for i, pub in enumerate(lista_pubs, start=1):
                         if not isinstance(pub, dict):
+                            barra_progresso.progress(i / len(lista_pubs))
                             continue
 
                         upload_id = pub.get("upload", {}).get("id") if isinstance(pub.get("upload"), dict) else pub.get("uploadId")
@@ -585,7 +641,7 @@ try:
                 st.error(f"Erro interno: {erro_geral}")
 
 # ==========================================
-# 7. EXIBIÇÃO DOS RESULTADOS
+# 10. EXIBIÇÃO DOS RESULTADOS
 # ==========================================
 if st.session_state.busca_concluida:
     st.divider()
@@ -629,5 +685,6 @@ if st.session_state.busca_concluida:
                 for falha in st.session_state.falhas_processamento:
                     st.warning(falha)
 
-    elif st.session_state.mensagem_status:
-        st.warning(st.session_state.mensagem_status)
+    else:
+        if st.session_state.mensagem_status:
+            st.warning(st.session_state.mensagem_status)
