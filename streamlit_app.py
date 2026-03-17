@@ -19,7 +19,8 @@ LOGIN_URL = f"{BASE_URL}/ws-auth/fazer-login"
 BUSCA_BG_URL = f"{BASE_URL}/ws-boletim-geral/publicacao"
 DOWNLOAD_BG_URL = f"{BASE_URL}/ws-alfresco/arquivo/"
 
-REQUEST_TIMEOUT = (15, none)
+# timeout apenas para conectar; leitura fica sem limite
+REQUEST_TIMEOUT = (15, None)
 
 # ==========================================
 # 2. ESTADO INICIAL
@@ -108,7 +109,6 @@ def normalizar_unicode(texto: str) -> str:
     })
     texto = texto.translate(mapa_letras)
 
-    # corrige falsos caracteres na palavra NOTA
     texto = re.sub(r"[ΝN][ΟO][ΤT][ΑA]\s+[NΝ]\.", "NOTA N.", texto, flags=re.IGNORECASE)
     return texto
 
@@ -149,6 +149,12 @@ def nome_aparece_no_bloco(texto_bloco: str, nome_militar: str) -> bool:
 
     hits = sum(1 for t in tokens_nome if t in texto_match)
     return (hits / len(tokens_nome)) >= 0.75
+
+
+def limpar_texto_para_exibicao(texto: str) -> str:
+    texto = re.sub(r"[ \t]+", " ", texto)
+    texto = re.sub(r"\n{3,}", "\n\n", texto)
+    return texto.strip()
 
 # ==========================================
 # 5. EXTRAÇÃO DO PDF
@@ -218,12 +224,6 @@ def extrair_linhas_do_pdf(pdf_bytes: bytes) -> list[str]:
 
 
 def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, str, int]:
-    """
-    Retorna:
-    - setor/contexto administrativo
-    - assunto/título imediato da nota
-    - índice inicial do bloco
-    """
     j = idx_nota - 1
     assunto = []
 
@@ -263,10 +263,6 @@ def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, st
 
 
 def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
-    """
-    Mantém o bloco até o último militar da seção
-    'Militares Relacionados com a Nota'.
-    """
     marcador = None
     for i, linha in enumerate(linhas_bloco):
         if re.search(r"^Militares Relacionados com a Nota$", linha, re.IGNORECASE):
@@ -301,7 +297,6 @@ def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
         if linha_eh_titulo(linha):
             break
 
-        # tolera uma linha curta logo após a lista, mas para se começar outro bloco
         if i > marcador + 1:
             break
 
@@ -342,7 +337,7 @@ def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
             "nota": meta["numero"],
             "setor": meta["setor"],
             "cabecalho": meta["cabecalho"],
-            "texto_completo": texto_completo,
+            "texto_completo": limpar_texto_para_exibicao(texto_completo),
         })
 
     return notas
@@ -397,7 +392,7 @@ def gerar_relatorio_txt(bgs_com_resultados: list[dict], nome_busca: str) -> str:
 # ==========================================
 def autenticar(sessao: requests.Session, usuario: str, senha: str) -> None:
     """
-    Mantém a mesma lógica do seu script anterior:
+    Mantém a mesma lógica do script anterior:
     - se status_code == 200, considera login OK
     - usa token se vier
     - não falha se o token não vier
@@ -631,6 +626,14 @@ if btn_buscar:
             except ValueError as erro_negocio:
                 status_box.update(label="Erro no processo.", state="error", expanded=True)
                 st.error(str(erro_negocio))
+
+            except requests.ConnectTimeout:
+                status_box.update(label="Tempo de conexão excedido.", state="error", expanded=True)
+                st.error("O servidor demorou demais para aceitar a conexão.")
+
+            except requests.ConnectionError as erro_conexao:
+                status_box.update(label="Erro de conexão.", state="error", expanded=True)
+                st.error(f"Erro de conexão com o servidor: {erro_conexao}")
 
             except requests.RequestException as erro_http:
                 status_box.update(label="Erro de comunicação.", state="error", expanded=True)
