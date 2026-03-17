@@ -61,7 +61,7 @@ RE_ATTACHMENT = re.compile(
 )
 
 RE_MILITAR_LISTA = re.compile(
-    r"^(?:\dº\s*)?(?:CEL|TEN\s*CEL|TC|MAJ|CAP|ASP|1º TEN|2º TEN|ST|1º SGT|2º SGT|3º SGT|CB|SD)\s+BM\b",
+    r"^(?:\dº\s*)?(?:CEL|TEN\s*CEL|TC|MAJ|CAP|ASP|CAD|1º TEN|2º TEN|ST|1º SGT|2º SGT|3º SGT|CB|SD)\s+BM\b",
     re.IGNORECASE,
 )
 
