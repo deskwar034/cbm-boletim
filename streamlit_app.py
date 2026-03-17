@@ -81,6 +81,11 @@ RE_LINHAS_LIXO = [
     re.compile(r"^BOLETIM GERAL N\.\s+\d+$", re.IGNORECASE),
 ]
 
+MESES_REGEX = (
+    r"JANEIRO|FEVEREIRO|MAR[ÇC]O|ABRIL|MAIO|JUNHO|"
+    r"JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO"
+)
+
 # ==========================================
 # 4. FUNÇÕES AUXILIARES
 # ==========================================
@@ -117,19 +122,18 @@ def normalizar_unicode(texto: str) -> str:
         "”": '"',
         "‘": "'",
         "’": "'",
+        "￾": "",
     }
 
     for antigo, novo in substituicoes.items():
         texto = texto.replace(antigo, novo)
 
-    # Alguns PDFs trocam caracteres visualmente parecidos
     mapa_letras = str.maketrans({
         "Ν": "N", "О": "O", "Ο": "O", "Τ": "T", "Α": "A",
         "М": "M", "С": "C", "Р": "P", "І": "I",
     })
     texto = texto.translate(mapa_letras)
 
-    # Corrige variações de NOTA N.
     texto = re.sub(
         r"[ΝN][ΟO][ΤT][ΑA]\s+[NΝ]\.",
         "NOTA N.",
@@ -182,6 +186,38 @@ def limpar_texto_para_exibicao(texto: str) -> str:
     texto = re.sub(r"[ \t]+", " ", texto)
     texto = re.sub(r"\n{3,}", "\n\n", texto)
     return texto.strip()
+
+
+def extrair_data_documento_pdf(pdf_bytes: bytes) -> str:
+    """
+    Extrai a data principal do BG, normalmente presente no cabeçalho da 1ª página.
+    Exemplo esperado:
+    ANO 2026 N. 1647 17 DE MARÇO DE 2026 9 PÁGINAS
+    """
+    try:
+        leitor = PdfReader(io.BytesIO(pdf_bytes))
+        if not leitor.pages:
+            return "Data não identificada"
+
+        texto_primeira_pagina = leitor.pages[0].extract_text() or ""
+        texto_primeira_pagina = normalizar_unicode(texto_primeira_pagina)
+        texto_primeira_pagina = texto_primeira_pagina.replace("\r", "\n")
+        texto_flat = re.sub(r"[ \t]+", " ", texto_primeira_pagina)
+
+        padroes = [
+            rf"ANO\s+\d{{4}}\s+N\.\s+\d+\s+(\d{{1,2}}\s+DE\s+(?:{MESES_REGEX})\s+DE\s+\d{{4}})\s+\d+\s+P[ÁA]GINAS?",
+            rf"\b(\d{{1,2}}\s+DE\s+(?:{MESES_REGEX})\s+DE\s+\d{{4}})\b",
+            r"\b(\d{2}/\d{2}/\d{4})\b",
+        ]
+
+        for padrao in padroes:
+            match = re.search(padrao, texto_flat, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+
+        return "Data não identificada"
+    except Exception:
+        return "Data não identificada"
 
 # ==========================================
 # 5. EXTRAÇÃO DO PDF
@@ -400,6 +436,7 @@ def gerar_relatorio_txt(bgs_com_resultados: List[Dict], nome_busca: str) -> str:
 
     for bg in bgs_com_resultados:
         linhas.append(f"BOLETIM GERAL N. {bg['numero_bg']}")
+        linhas.append(f"Data do documento: {bg.get('data_documento', 'Data não identificada')}")
         linhas.append("-" * 70)
 
         for res in bg["resultados"]:
@@ -671,11 +708,13 @@ if btn_buscar:
 
                             try:
                                 pdf_bytes = baixar_pdf(sessao, upload_id)
+                                data_documento = extrair_data_documento_pdf(pdf_bytes)
                                 resultados = extrair_notas_do_militar(pdf_bytes, nome_busca)
 
                                 if resultados:
                                     bgs_com_resultados.append({
                                         "numero_bg": num_bg,
+                                        "data_documento": data_documento,
                                         "resultados": resultados,
                                     })
 
@@ -763,7 +802,8 @@ if st.session_state.busca_concluida:
         st.markdown("---")
 
         for bg_encontrado in bgs_resultados:
-            st.subheader(f"📄 BG N. {bg_encontrado['numero_bg']}")
+            data_doc = bg_encontrado.get("data_documento", "Data não identificada")
+            st.subheader(f"📄 BG N. {bg_encontrado['numero_bg']} — {data_doc}")
 
             for res in bg_encontrado["resultados"]:
                 titulo_expander = f"📌 NOTA N. {res['nota']}"
@@ -771,6 +811,7 @@ if st.session_state.busca_concluida:
                     titulo_expander += f" - {res['cabecalho']}"
 
                 with st.expander(titulo_expander, expanded=True):
+                    st.markdown(f"**Data do documento:** {data_doc}")
                     if res.get("setor"):
                         st.markdown(f"**Setor:** {res['setor']}")
                     if res.get("cabecalho"):
