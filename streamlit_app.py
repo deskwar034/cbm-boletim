@@ -2,8 +2,10 @@ import streamlit as st
 import requests
 import re
 import io
+import time
 import datetime
 import unicodedata
+from typing import List, Dict, Optional, Tuple
 from pypdf import PdfReader
 
 # ==========================================
@@ -19,13 +21,13 @@ LOGIN_URL = f"{BASE_URL}/ws-auth/fazer-login"
 BUSCA_BG_URL = f"{BASE_URL}/ws-boletim-geral/publicacao"
 DOWNLOAD_BG_URL = f"{BASE_URL}/ws-alfresco/arquivo/"
 
-# timeout apenas para conectar; leitura fica sem limite
+# Timeout apenas para conectar; leitura/resposta fica sem limite
 REQUEST_TIMEOUT = (15, None)
 
 # ==========================================
 # 2. ESTADO INICIAL
 # ==========================================
-def inicializar_estado():
+def inicializar_estado() -> None:
     defaults = {
         "busca_concluida": False,
         "bgs_encontrados": [],
@@ -33,6 +35,8 @@ def inicializar_estado():
         "mensagem_status": "",
         "modo_teste_ativo": False,
         "falhas_processamento": [],
+        "tempo_pesquisa_segundos": None,
+        "tempo_processamento_segundos": None,
     }
     for chave, valor in defaults.items():
         if chave not in st.session_state:
@@ -42,14 +46,19 @@ def inicializar_estado():
 inicializar_estado()
 
 # ==========================================
-# 3. HELPERS / REGEX
+# 3. REGEX / PADRÕES
 # ==========================================
 RE_NOTA = re.compile(r"^\s*NOTA\s+N\.\s*(\d+)\s*$", re.IGNORECASE)
+
 RE_FOOTER = re.compile(
     r"BOLETIM GERAL N\.\s+\d+.*?P[ÁA]GINA\s+\d+\s*/\s*\d+",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
-RE_ATTACHMENT = re.compile(r".+\.(pdf|docx?|xlsx?|jpg|jpeg|png)$", re.IGNORECASE)
+
+RE_ATTACHMENT = re.compile(
+    r".+\.(pdf|docx?|xlsx?|jpg|jpeg|png)$",
+    re.IGNORECASE,
+)
 
 RE_MILITAR_LISTA = re.compile(
     r"^(?:\dº\s*)?(?:CEL|TEN\s*CEL|TC|MAJ|CAP|ASP|1º TEN|2º TEN|ST|1º SGT|2º SGT|3º SGT|CB|SD)\s+BM\b",
@@ -73,7 +82,7 @@ RE_LINHAS_LIXO = [
 ]
 
 # ==========================================
-# 4. FUNÇÕES DE FORMATAÇÃO / NORMALIZAÇÃO
+# 4. FUNÇÕES AUXILIARES
 # ==========================================
 def formatar_cpf(cpf_bruto: str) -> str:
     cpf_limpo = re.sub(r"\D", "", cpf_bruto or "")
@@ -81,6 +90,16 @@ def formatar_cpf(cpf_bruto: str) -> str:
     if len(cpf_limpo) == 11:
         return f"{cpf_limpo[:3]}.{cpf_limpo[3:6]}.{cpf_limpo[6:9]}-{cpf_limpo[9:]}"
     return cpf_bruto
+
+
+def formatar_duracao(segundos: Optional[float]) -> str:
+    if segundos is None:
+        return "-"
+    if segundos < 60:
+        return f"{segundos:.1f} s"
+    minutos = int(segundos // 60)
+    resto = segundos % 60
+    return f"{minutos} min {resto:.1f} s"
 
 
 def normalizar_unicode(texto: str) -> str:
@@ -103,13 +122,21 @@ def normalizar_unicode(texto: str) -> str:
     for antigo, novo in substituicoes.items():
         texto = texto.replace(antigo, novo)
 
+    # Alguns PDFs trocam caracteres visualmente parecidos
     mapa_letras = str.maketrans({
         "Ν": "N", "О": "O", "Ο": "O", "Τ": "T", "Α": "A",
         "М": "M", "С": "C", "Р": "P", "І": "I",
     })
     texto = texto.translate(mapa_letras)
 
-    texto = re.sub(r"[ΝN][ΟO][ΤT][ΑA]\s+[NΝ]\.", "NOTA N.", texto, flags=re.IGNORECASE)
+    # Corrige variações de NOTA N.
+    texto = re.sub(
+        r"[ΝN][ΟO][ΤT][ΑA]\s+[NΝ]\.",
+        "NOTA N.",
+        texto,
+        flags=re.IGNORECASE
+    )
+
     return texto
 
 
@@ -161,6 +188,7 @@ def limpar_texto_para_exibicao(texto: str) -> str:
 # ==========================================
 def linha_eh_titulo(linha: str) -> bool:
     linha = (linha or "").strip()
+
     if not linha:
         return False
     if RE_NOTA.match(linha):
@@ -169,7 +197,11 @@ def linha_eh_titulo(linha: str) -> bool:
         return False
     if RE_MILITAR_LISTA.match(linha):
         return False
-    if re.search(r"^ADM\.$|Aprovado por:|Militares Relacionados com a Nota|Responsável pelo ato", linha, re.IGNORECASE):
+    if re.search(
+        r"^ADM\.$|Aprovado por:|Militares Relacionados com a Nota|Responsável pelo ato",
+        linha,
+        re.IGNORECASE,
+    ):
         return False
     if linha.endswith((".", ";", ":")):
         return False
@@ -186,7 +218,7 @@ def linha_eh_titulo(linha: str) -> bool:
     return proporcao >= 0.65 or (proporcao >= 0.45 and len(linha.split()) <= 7)
 
 
-def limpar_linhas_pagina(texto_pagina: str) -> list[str]:
+def limpar_linhas_pagina(texto_pagina: str) -> List[str]:
     texto_pagina = (texto_pagina or "").replace("\r", "\n")
     linhas_originais = texto_pagina.splitlines()
     linhas = []
@@ -197,13 +229,10 @@ def limpar_linhas_pagina(texto_pagina: str) -> list[str]:
 
         if not linha:
             continue
-
         if RE_FOOTER.search(linha):
             continue
-
         if any(p.search(linha) for p in RE_CABECALHOS_FIXOS):
             continue
-
         if any(p.search(linha) for p in RE_LINHAS_LIXO):
             continue
 
@@ -212,7 +241,7 @@ def limpar_linhas_pagina(texto_pagina: str) -> list[str]:
     return linhas
 
 
-def extrair_linhas_do_pdf(pdf_bytes: bytes) -> list[str]:
+def extrair_linhas_do_pdf(pdf_bytes: bytes) -> List[str]:
     leitor = PdfReader(io.BytesIO(pdf_bytes))
     linhas = []
 
@@ -223,7 +252,7 @@ def extrair_linhas_do_pdf(pdf_bytes: bytes) -> list[str]:
     return linhas
 
 
-def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, str, int]:
+def extrair_contexto_pre_nota(linhas: List[str], idx_nota: int) -> Tuple[str, str, int]:
     j = idx_nota - 1
     assunto = []
 
@@ -237,17 +266,21 @@ def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, st
     k = j
     while k >= 0 and len(setor) < 2:
         linha = linhas[k].strip()
+
         if not linha:
             k -= 1
             continue
-
         if RE_NOTA.match(linha):
             break
         if RE_ATTACHMENT.match(linha):
             break
         if RE_MILITAR_LISTA.match(linha):
             break
-        if re.search(r"^ADM\.$|Aprovado por:|Militares Relacionados com a Nota|Responsável pelo ato", linha, re.IGNORECASE):
+        if re.search(
+            r"^ADM\.$|Aprovado por:|Militares Relacionados com a Nota|Responsável pelo ato",
+            linha,
+            re.IGNORECASE,
+        ):
             break
         if len(linha) > 100 or linha.endswith((".", ";", ":")):
             break
@@ -262,8 +295,9 @@ def extrair_contexto_pre_nota(linhas: list[str], idx_nota: int) -> tuple[str, st
     return setor_str, assunto_str, idx_inicio_bloco
 
 
-def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
+def aparar_bloco_ate_ultimo_militar(linhas_bloco: List[str]) -> List[str]:
     marcador = None
+
     for i, linha in enumerate(linhas_bloco):
         if re.search(r"^Militares Relacionados com a Nota$", linha, re.IGNORECASE):
             marcador = i
@@ -279,10 +313,8 @@ def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
 
         if not linha:
             continue
-
         if RE_ATTACHMENT.match(linha):
             break
-
         if RE_NOTA.match(linha):
             break
 
@@ -303,7 +335,7 @@ def aparar_bloco_ate_ultimo_militar(linhas_bloco: list[str]) -> list[str]:
     return linhas_bloco[:ultimo_indice_util + 1]
 
 
-def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
+def montar_blocos_de_notas(linhas_pdf: List[str]) -> List[Dict]:
     notas = []
     indices_notas = [i for i, linha in enumerate(linhas_pdf) if RE_NOTA.match(linha)]
 
@@ -330,7 +362,6 @@ def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
 
         linhas_bloco = linhas_pdf[inicio:fim]
         linhas_bloco = aparar_bloco_ate_ultimo_militar(linhas_bloco)
-
         texto_completo = "\n".join(linhas_bloco).strip()
 
         notas.append({
@@ -343,7 +374,7 @@ def montar_blocos_de_notas(linhas_pdf: list[str]) -> list[dict]:
     return notas
 
 
-def extrair_notas_do_militar(pdf_bytes: bytes, nome_militar: str) -> list[dict]:
+def extrair_notas_do_militar(pdf_bytes: bytes, nome_militar: str) -> List[Dict]:
     linhas_pdf = extrair_linhas_do_pdf(pdf_bytes)
     blocos = montar_blocos_de_notas(linhas_pdf)
 
@@ -357,7 +388,7 @@ def extrair_notas_do_militar(pdf_bytes: bytes, nome_militar: str) -> list[dict]:
 # ==========================================
 # 6. RELATÓRIO TXT
 # ==========================================
-def gerar_relatorio_txt(bgs_com_resultados: list[dict], nome_busca: str) -> str:
+def gerar_relatorio_txt(bgs_com_resultados: List[Dict], nome_busca: str) -> str:
     linhas = []
     linhas.append("=" * 70)
     linhas.append("RELATÓRIO DE ALTERAÇÕES FUNCIONAIS - CBMMS")
@@ -421,7 +452,12 @@ def autenticar(sessao: requests.Session, usuario: str, senha: str) -> None:
         sessao.headers.update({"token": token})
 
 
-def buscar_publicacoes(sessao: requests.Session, nome_busca: str, data_inicial, data_final) -> list[dict]:
+def buscar_publicacoes(
+    sessao: requests.Session,
+    nome_busca: str,
+    data_inicial,
+    data_final
+) -> List[Dict]:
     params_busca = {
         "de": data_inicial.strftime("%Y-%m-%dT03:00:00.000Z"),
         "ate": data_final.strftime("%Y-%m-%dT03:00:00.000Z"),
@@ -435,6 +471,7 @@ def buscar_publicacoes(sessao: requests.Session, nome_busca: str, data_inicial, 
         raise ValueError("Erro ao pesquisar a lista de boletins. Verifique se o sistema está online.")
 
     publicacoes_brutas = resposta.json()
+
     if isinstance(publicacoes_brutas, list):
         return publicacoes_brutas
 
@@ -497,7 +534,10 @@ with st.form("login_form"):
     senha = st.text_input("Senha", type="password", disabled=bloquear_campos)
 
     st.subheader("2. Parâmetros da Pesquisa")
-    nome_busca = st.text_input("Nome completo exato a procurar", placeholder="Ex: João da Silva")
+    nome_busca = st.text_input(
+        "Nome completo exato a procurar",
+        placeholder="Ex: João da Silva"
+    )
 
     col1, col2 = st.columns(2)
 
@@ -547,6 +587,8 @@ if btn_buscar:
         st.session_state.nome_pesquisado = nome_busca
         st.session_state.mensagem_status = ""
         st.session_state.falhas_processamento = []
+        st.session_state.tempo_pesquisa_segundos = None
+        st.session_state.tempo_processamento_segundos = None
 
         with st.status("Iniciando processo...", expanded=True) as status_box:
             login_mostrado = "CONTA_DE_TESTE" if st.session_state.modo_teste_ativo else usuario_final
@@ -560,60 +602,101 @@ if btn_buscar:
                 st.write("✅ Autenticação realizada com sucesso!")
 
                 status_box.update(label="Consultando boletins...", state="running", expanded=True)
-                aviso_demora = st.info("⏳ Consultando os boletins no período informado...")
-                lista_pubs = buscar_publicacoes(sessao, nome_busca, data_inicial, data_final)
-                aviso_demora.empty()
+
+                aviso_tempo = st.info(
+                    "⏳ A depender do espaço temporal pesquisado e da quantidade de resultados, "
+                    "o processo pode levar até 2 minutos."
+                )
+
+                inicio_pesquisa = time.perf_counter()
+                with st.spinner("🔎 Pesquisando boletins..."):
+                    lista_pubs = buscar_publicacoes(sessao, nome_busca, data_inicial, data_final)
+                fim_pesquisa = time.perf_counter()
+
+                st.session_state.tempo_pesquisa_segundos = fim_pesquisa - inicio_pesquisa
+                aviso_tempo.empty()
 
                 if not lista_pubs:
                     st.session_state.busca_concluida = True
                     st.session_state.mensagem_status = (
                         f"Nenhum boletim encontrado contendo o nome '{nome_busca}' neste período."
                     )
-                    status_box.update(label="Pesquisa concluída sem resultados.", state="complete", expanded=True)
+                    status_box.update(
+                        label="Pesquisa concluída sem resultados.",
+                        state="complete",
+                        expanded=True
+                    )
                 else:
                     st.write(f"📥 A API retornou {len(lista_pubs)} boletim(ns).")
-                    status_box.update(label="Baixando e extraindo PDFs...", state="running", expanded=True)
+                    st.write(
+                        f"⏱️ Tempo da pesquisa: "
+                        f"{formatar_duracao(st.session_state.tempo_pesquisa_segundos)}"
+                    )
 
-                    barra_progresso = st.progress(0)
-                    texto_progresso = st.empty()
-                    bgs_com_resultados = []
+                    status_box.update(
+                        label="Baixando e analisando PDFs...",
+                        state="running",
+                        expanded=True
+                    )
 
-                    for i, pub in enumerate(lista_pubs, start=1):
-                        if not isinstance(pub, dict):
-                            barra_progresso.progress(i / len(lista_pubs))
-                            continue
+                    with st.spinner("📄 Baixando e analisando os dados encontrados..."):
+                        barra_progresso = st.progress(0)
+                        texto_progresso = st.empty()
+                        bgs_com_resultados = []
 
-                        upload_id = pub.get("upload", {}).get("id") if isinstance(pub.get("upload"), dict) else pub.get("uploadId")
-                        num_bg = pub.get("numeroDaPublicacao", "S/N")
+                        inicio_processamento = time.perf_counter()
 
-                        texto_progresso.text(f"🔍 Processando BG N. {num_bg} ({i}/{len(lista_pubs)})...")
+                        for i, pub in enumerate(lista_pubs, start=1):
+                            if not isinstance(pub, dict):
+                                barra_progresso.progress(i / len(lista_pubs))
+                                continue
 
-                        if not upload_id:
-                            st.session_state.falhas_processamento.append(
-                                f"BG {num_bg}: publicação sem upload_id."
+                            upload_id = (
+                                pub.get("upload", {}).get("id")
+                                if isinstance(pub.get("upload"), dict)
+                                else pub.get("uploadId")
                             )
-                            barra_progresso.progress(i / len(lista_pubs))
-                            continue
+                            num_bg = pub.get("numeroDaPublicacao", "S/N")
 
-                        try:
-                            pdf_bytes = baixar_pdf(sessao, upload_id)
-                            resultados = extrair_notas_do_militar(pdf_bytes, nome_busca)
-
-                            if resultados:
-                                bgs_com_resultados.append({
-                                    "numero_bg": num_bg,
-                                    "resultados": resultados,
-                                })
-
-                        except Exception as erro_pdf:
-                            st.session_state.falhas_processamento.append(
-                                f"BG {num_bg}: {str(erro_pdf)}"
+                            texto_progresso.text(
+                                f"🔍 Processando BG N. {num_bg} ({i}/{len(lista_pubs)})..."
                             )
 
-                        barra_progresso.progress(i / len(lista_pubs))
+                            if not upload_id:
+                                st.session_state.falhas_processamento.append(
+                                    f"BG {num_bg}: publicação sem upload_id."
+                                )
+                                barra_progresso.progress(i / len(lista_pubs))
+                                continue
+
+                            try:
+                                pdf_bytes = baixar_pdf(sessao, upload_id)
+                                resultados = extrair_notas_do_militar(pdf_bytes, nome_busca)
+
+                                if resultados:
+                                    bgs_com_resultados.append({
+                                        "numero_bg": num_bg,
+                                        "resultados": resultados,
+                                    })
+
+                            except Exception as erro_pdf:
+                                st.session_state.falhas_processamento.append(
+                                    f"BG {num_bg}: {str(erro_pdf)}"
+                                )
+
+                            barra_progresso.progress(i / len(lista_pubs))
+
+                        fim_processamento = time.perf_counter()
+                        st.session_state.tempo_processamento_segundos = (
+                            fim_processamento - inicio_processamento
+                        )
 
                     texto_progresso.text("✅ Processamento de todos os PDFs finalizado!")
-                    status_box.update(label="Pesquisa finalizada com sucesso!", state="complete", expanded=True)
+                    status_box.update(
+                        label="Pesquisa finalizada com sucesso!",
+                        state="complete",
+                        expanded=True
+                    )
 
                     st.session_state.bgs_encontrados = bgs_com_resultados
                     st.session_state.busca_concluida = True
@@ -651,6 +734,18 @@ if st.session_state.busca_concluida:
 
     bgs_resultados = st.session_state.bgs_encontrados
     nome_pesquisado = st.session_state.nome_pesquisado
+
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        st.metric(
+            "Tempo da pesquisa",
+            formatar_duracao(st.session_state.tempo_pesquisa_segundos)
+        )
+    with col_t2:
+        st.metric(
+            "Tempo de baixar e analisar",
+            formatar_duracao(st.session_state.tempo_processamento_segundos)
+        )
 
     if bgs_resultados:
         total_notas = sum(len(bg["resultados"]) for bg in bgs_resultados)
